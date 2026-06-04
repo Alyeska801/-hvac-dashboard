@@ -34,12 +34,14 @@ export default async function handler(req, res) {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          method: "THSensor.getState",
-          targetDevice: deviceId,
-          token: token,
-          time: Math.floor(Date.now() / 1000),
-        }),
+body: JSON.stringify({
+  method: "THSensor.getState",
+  time: Math.floor(Date.now() / 1000),
+  data: {
+    targetDevice: deviceId,
+    token: token,
+  }
+}),
       });
       return r.json();
     }
