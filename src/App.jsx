@@ -318,9 +318,29 @@ function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta,
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [readings,   setReadings]   = useState(() => Object.fromEntries(SENSORS.map(s => [s.id, generateReading(s.id)])));
-  const [histories,  setHistories]  = useState(() => Object.fromEntries(SENSORS.map(s => [s.id, generateHistory(s.id)])));
-  const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [readings, setReadings] = useState({});
+const [histories, setHistories] = useState(() => Object.fromEntries(SENSORS.map(s => [s.id, generateHistory(s.id)])));
+const [lastUpdate, setLastUpdate] = useState(new Date());
+const [apiCwsStatus, setApiCwsStatus] = useState(null);
+
+const refresh = useCallback(async () => {
+  try {
+    const res = await fetch("/api/sensors");
+    const data = await res.json();
+    if (data.readings) {
+      setReadings(data.readings);
+      setHistories(prev => Object.fromEntries(SENSORS.map(s => [s.id, 
+        data.readings[s.id] != null
+          ? [...prev[s.id].slice(-29), { time: new Date(), value: data.readings[s.id] }]
+          : prev[s.id]
+      ])));
+      setApiCwsStatus(data.cwsStatus);
+      setLastUpdate(new Date());
+    }
+  } catch (err) {
+    console.error("Failed to fetch sensor data:", err);
+  }
+}, []);
 
   const [ambientTemp, setAmbientTemp] = useState(null);
   const [matchDelta,  setMatchDelta]  = useState(AMBIENT_MATCH_DELTA);
@@ -367,7 +387,7 @@ export default function App() {
 
   useEffect(() => { const id = setInterval(refresh, 30000); return () => clearInterval(id); }, [refresh]);
 
-  const cwsStatus  = getCWSStatus(readings["CHW-S"], ambientTemp, matchDelta);
+  const cwsStatus = apiCwsStatus || getCWSStatus(readings["CHW-S"], ambientTemp, matchDelta);
   const systemMeta = STATUS_META[cwsStatus];
 
   // Sensors and deltas filtered by visibility
