@@ -168,7 +168,9 @@ function Toggle({ on, onChange, label, sublabel }) {
   );
 }
 
-function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta, engState, setEngState, eta, setEta, showHot, setShowHot, onClose }) {
+function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta,
+                      engState, setEngState, eta, setEta,
+                      showHot, setShowHot, onClose, onSave, saving }) {
   const [ambDraft, setAmbDraft] = useState(ambientTemp ?? "");
   const [deltaDraft, setDeltaDraft] = useState(matchDelta);
   const btnBase = { flex:1, borderRadius:7, padding:"9px 8px", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:0.5, border:"1px solid", transition:"all 0.15s", textAlign:"center" };
@@ -214,7 +216,7 @@ function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta, en
           ? <div style={{ marginTop:5, fontSize:10, color:"#2a6a4a" }}>✓ Ambient {ambientTemp}°F · offline trigger ≤ {(ambientTemp-matchDelta).toFixed(1)}°F CWS</div>
           : <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>No ambient set — fixed thresholds only.</div>}
       </div>
-      <div>
+      <div style={{ marginBottom:16 }}>
         <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5 }}>AMBIENT MATCH DELTA (°F)</div>
         <div style={{ display:"flex", gap:8 }}>
           <input type="number" value={deltaDraft} onChange={e=>setDeltaDraft(e.target.value)}
@@ -224,6 +226,15 @@ function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta, en
         </div>
         <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>Offline when CWS ≥ ambient − {matchDelta}°F</div>
       </div>
+      {/* Save to server button */}
+      <button onClick={onSave} disabled={saving} style={{
+        width:"100%", background: saving ? "#0a1828" : "#1a3a5a",
+        border:"1px solid #2a5a8a", borderRadius:8, color: saving ? "#3a6a8a" : "#81b4d4",
+        padding:"10px", fontSize:11, fontFamily:"'DM Mono',monospace",
+        cursor: saving ? "default" : "pointer", letterSpacing:1, marginTop:4,
+      }}>
+        {saving ? "SAVING..." : "💾 SAVE SETTINGS FOR ALL VIEWERS"}
+      </button>
     </div>
   );
 }
@@ -242,6 +253,34 @@ export default function App() {
   const [pwModal,      setPwModal]      = useState(false);
   const [pwDraft,      setPwDraft]      = useState("");
   const [pwError,      setPwError]      = useState(false);
+  const [saving,       setSaving]       = useState(false);
+
+  // Load settings from server on mount
+  useEffect(() => {
+    fetch("/api/settings")
+      .then(r => r.json())
+      .then(s => {
+        if (s.showHot !== undefined) setShowHot(s.showHot);
+        if (s.engState)              setEngState(s.engState);
+        if (s.eta !== undefined)     setEta(s.eta);
+      })
+      .catch(console.error);
+  }, []);
+
+  // Save settings to server
+  async function saveSettings() {
+    setSaving(true);
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ showHot, engState, eta }),
+      });
+    } catch (err) {
+      console.error("Failed to save settings:", err);
+    }
+    setSaving(false);
+  }
 
   function attemptLogin() {
     if (pwDraft === ADMIN_PASSWORD) {
@@ -393,6 +432,7 @@ export default function App() {
           eta={eta}                 setEta={setEta}
           showHot={showHot}         setShowHot={setShowHot}
           onClose={() => setAdminOpen(false)}
+          onSave={saveSettings}     saving={saving}
         />
       )}
     </div>
