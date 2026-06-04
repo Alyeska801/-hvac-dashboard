@@ -18,8 +18,10 @@ const GAUGE_RANGES = {
 };
 const BASELINES = { "CHW-S": 52, "CHW-R": 62, "HHW-S": 140, "HHW-R": 120 };
 const AMBIENT_MATCH_DELTA = 8;
+const ADMIN_PASSWORD = "towers";
 
 function getCWSStatus(cwsTemp, ambientTemp, matchDelta = AMBIENT_MATCH_DELTA) {
+  if (cwsTemp == null) return "nominal";
   if (ambientTemp !== null && cwsTemp >= ambientTemp - matchDelta) return "offline";
   if (cwsTemp >= 65) return "offline";
   if (cwsTemp >= 57) return "degraded";
@@ -38,29 +40,22 @@ const ENG_STATES = {
   maintenance: { label: "Offline for service" },
 };
 
-let _tick = 0;
-function generateReading(id) {
-  _tick++;
-  const base = BASELINES[id];
-  const drift = id.startsWith("CHW") ? (_tick * 0.045) % 18 : (_tick * 0.01) % 3;
-  return +(base + drift + (Math.random() - 0.5) * 1.2).toFixed(1);
-}
 function generateHistory(id, n = 30) {
   const now = Date.now();
+  const base = BASELINES[id];
   return Array.from({ length: n }, (_, i) => ({
     time: new Date(now - (n - i) * 60000),
-    value: +(BASELINES[id] + (id.startsWith("CHW") ? ((n - i) * 0.045) % 12 : 0) + (Math.random() - 0.5) * 1.5).toFixed(1),
+    value: +(base + (Math.random() - 0.5) * 1.5).toFixed(1),
   }));
 }
 
 function getSensorStatus(id, val) {
-  const t = THRESHOLDS[id]; if (!t) return "normal";
+  const t = THRESHOLDS[id]; if (!t || val == null) return "normal";
   return val >= t.crit ? "critical" : val >= t.warn ? "warning" : "normal";
 }
 function fmtTime(d) { return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 function fmtDate(d) { return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }); }
 
-// ─── Sparkline ────────────────────────────────────────────────────────────────
 function Sparkline({ data, color, width = 210, height = 34 }) {
   if (!data || data.length < 2) return null;
   const vals = data.map(d => d.value);
@@ -80,9 +75,8 @@ function Sparkline({ data, color, width = 210, height = 34 }) {
   );
 }
 
-// ─── Gauge ────────────────────────────────────────────────────────────────────
 function Gauge({ value, min, max, color, status }) {
-  const pct = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  const pct = Math.max(0, Math.min(1, ((value ?? min) - min) / (max - min)));
   const nc = { normal: "#4CAF50", warning: "#FFA726", critical: "#EF5350" }[status] || "#ccc";
   return (
     <svg width="90" height="62" viewBox="0 0 90 62">
@@ -97,7 +91,6 @@ function Gauge({ value, min, max, color, status }) {
   );
 }
 
-// ─── Sensor Card ──────────────────────────────────────────────────────────────
 function SensorCard({ sensor, reading, history }) {
   const status = getSensorStatus(sensor.id, reading);
   const sdot = { normal: "#4CAF50", warning: "#FFA726", critical: "#EF5350" }[status];
@@ -105,265 +98,156 @@ function SensorCard({ sensor, reading, history }) {
   const slbl = { normal: "NOMINAL", warning: "ELEVATED", critical: "ALERT" }[status];
   const [gMin, gMax] = GAUGE_RANGES[sensor.id];
   return (
-    <div style={{
-      background: "linear-gradient(135deg,#0d1b2e 0%,#0a1525 100%)",
-      border: "1px solid #1e2d45", borderRadius: 12,
-      padding: "18px 18px 14px", position: "relative", overflow: "hidden",
-    }}>
-      <div style={{
-        position:"absolute", top:12, right:12, background:sbg,
-        border:`1px solid ${sdot}40`, borderRadius:20, padding:"3px 10px",
-        display:"flex", alignItems:"center", gap:5,
-      }}>
-        <div style={{
-          width:6, height:6, borderRadius:"50%", background:sdot,
-          boxShadow:status!=="normal"?`0 0 6px ${sdot}`:"none",
-          animation:status!=="normal"?"pulse 1.5s infinite":"none",
-        }}/>
-        <span style={{fontSize:9, fontFamily:"'DM Mono',monospace", color:sdot, letterSpacing:1}}>{slbl}</span>
+    <div style={{ background:"linear-gradient(135deg,#0d1b2e 0%,#0a1525 100%)", border:"1px solid #1e2d45", borderRadius:12, padding:"18px 18px 14px", position:"relative", overflow:"hidden" }}>
+      <div style={{ position:"absolute", top:12, right:12, background:sbg, border:`1px solid ${sdot}40`, borderRadius:20, padding:"3px 10px", display:"flex", alignItems:"center", gap:5 }}>
+        <div style={{ width:6, height:6, borderRadius:"50%", background:sdot, boxShadow:status!=="normal"?`0 0 6px ${sdot}`:"none", animation:status!=="normal"?"pulse 1.5s infinite":"none" }}/>
+        <span style={{ fontSize:9, fontFamily:"'DM Mono',monospace", color:sdot, letterSpacing:1 }}>{slbl}</span>
       </div>
-      <div style={{marginBottom:2}}>
-        <div style={{fontSize:10, color:sensor.color, fontFamily:"'DM Mono',monospace", letterSpacing:2, opacity:0.85}}>
-          {sensor.pipe==="cold"?"❄":"🔥"} {sensor.label.toUpperCase()}
-        </div>
-        <div style={{fontSize:12, color:"#6a8eaa", fontFamily:"'DM Mono',monospace", letterSpacing:1}}>{sensor.role.toUpperCase()}</div>
+      <div style={{ marginBottom:2 }}>
+        <div style={{ fontSize:10, color:sensor.color, fontFamily:"'DM Mono',monospace", letterSpacing:2, opacity:0.85 }}>{sensor.pipe==="cold"?"❄":"🔥"} {sensor.label.toUpperCase()}</div>
+        <div style={{ fontSize:12, color:"#6a8eaa", fontFamily:"'DM Mono',monospace", letterSpacing:1 }}>{sensor.role.toUpperCase()}</div>
       </div>
-      <div style={{display:"flex", alignItems:"center", gap:10, marginTop:6}}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:6 }}>
         <Gauge value={reading} min={gMin} max={gMax} color={sensor.color} status={status}/>
         <div>
-          <div style={{fontSize:36, fontWeight:700, fontFamily:"'Barlow Condensed',sans-serif", color:"#e8f4fd", lineHeight:1}}>{reading}</div>
-          <div style={{fontSize:13, color:"#3a6a8a", fontFamily:"'DM Mono',monospace"}}>°F</div>
+          <div style={{ fontSize:36, fontWeight:700, fontFamily:"'Barlow Condensed',sans-serif", color:"#e8f4fd", lineHeight:1 }}>{reading ?? "—"}</div>
+          <div style={{ fontSize:13, color:"#3a6a8a", fontFamily:"'DM Mono',monospace" }}>°F</div>
         </div>
       </div>
-      <div style={{marginTop:10}}>
-        <Sparkline data={history} color={sensor.color}/>
-      </div>
+      <div style={{ marginTop:10 }}><Sparkline data={history} color={sensor.color}/></div>
     </div>
   );
 }
 
-// ─── Delta Badge ──────────────────────────────────────────────────────────────
 function DeltaBadge({ label, a, b, colorA, colorB }) {
+  if (a == null || b == null) return null;
   const delta = +(b - a).toFixed(1);
   const dc = delta > 15 ? "#EF5350" : delta > 8 ? "#FFA726" : "#4CAF50";
   return (
-    <div style={{background:"#0a1525", border:"1px solid #1e2d45", borderRadius:8, padding:"12px 14px", textAlign:"center"}}>
-      <div style={{fontSize:9, color:"#3a6a8a", fontFamily:"'DM Mono',monospace", letterSpacing:1, marginBottom:6}}>{label}</div>
-      <div style={{display:"flex", alignItems:"center", justifyContent:"center", gap:8}}>
-        <span style={{color:colorA, fontFamily:"'Barlow Condensed',sans-serif", fontSize:17, fontWeight:700}}>{a}°</span>
-        <span style={{color:"#1e3050", fontSize:11}}>→</span>
-        <span style={{color:colorB, fontFamily:"'Barlow Condensed',sans-serif", fontSize:17, fontWeight:700}}>{b}°</span>
+    <div style={{ background:"#0a1525", border:"1px solid #1e2d45", borderRadius:8, padding:"12px 14px", textAlign:"center" }}>
+      <div style={{ fontSize:9, color:"#3a6a8a", fontFamily:"'DM Mono',monospace", letterSpacing:1, marginBottom:6 }}>{label}</div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+        <span style={{ color:colorA, fontFamily:"'Barlow Condensed',sans-serif", fontSize:17, fontWeight:700 }}>{a}°</span>
+        <span style={{ color:"#1e3050", fontSize:11 }}>→</span>
+        <span style={{ color:colorB, fontFamily:"'Barlow Condensed',sans-serif", fontSize:17, fontWeight:700 }}>{b}°</span>
       </div>
-      <div style={{marginTop:5, fontSize:20, fontWeight:700, fontFamily:"'Barlow Condensed',sans-serif", color:dc}}>
-        Δ {delta>0?"+":""}{delta}°F
-      </div>
+      <div style={{ marginTop:5, fontSize:20, fontWeight:700, fontFamily:"'Barlow Condensed',sans-serif", color:dc }}>Δ {delta>0?"+":""}{delta}°F</div>
     </div>
   );
 }
 
-// ─── Status Banner ────────────────────────────────────────────────────────────
 function StatusBanner({ cwsStatus, engState, eta }) {
   const meta = STATUS_META[cwsStatus];
   if (cwsStatus === "nominal" && engState === "none") return null;
   let msg = meta.baseMsg || "";
-  if (engState === "aware") {
-    msg = [msg, ENG_STATES.aware.suffix].filter(Boolean).join(" ");
-  } else if (engState === "maintenance") {
+  if (engState === "aware") msg = [msg, ENG_STATES.aware.suffix].filter(Boolean).join(" ");
+  else if (engState === "maintenance") {
     const etaPart = eta ? `Estimated return to service: ${eta}.` : "Return to service time is being determined.";
     msg = [msg, "System is offline for scheduled maintenance.", etaPart].filter(Boolean).join(" ");
   }
   if (!msg) return null;
-  const icon = cwsStatus === "offline" ? "🔴" : "🟡";
-  const textColor = cwsStatus === "offline" ? "#ef9a9a" : "#ffcc80";
   return (
-    <div style={{
-      marginTop:16, background:meta.bg, border:`1px solid ${meta.border}`,
-      borderRadius:8, padding:"11px 16px", display:"flex", alignItems:"flex-start", gap:10,
-    }}>
-      <span style={{fontSize:14, marginTop:1, flexShrink:0}}>{icon}</span>
-      <span style={{fontSize:13, color:textColor, lineHeight:1.6}}>{msg}</span>
+    <div style={{ marginTop:16, background:meta.bg, border:`1px solid ${meta.border}`, borderRadius:8, padding:"11px 16px", display:"flex", alignItems:"flex-start", gap:10 }}>
+      <span style={{ fontSize:14, marginTop:1, flexShrink:0 }}>{cwsStatus==="offline"?"🔴":"🟡"}</span>
+      <span style={{ fontSize:13, color:cwsStatus==="offline"?"#ef9a9a":"#ffcc80", lineHeight:1.6 }}>{msg}</span>
     </div>
   );
 }
 
-// ─── Toggle Switch ────────────────────────────────────────────────────────────
 function Toggle({ on, onChange, label, sublabel }) {
   return (
-    <div
-      onClick={() => onChange(!on)}
-      style={{
-        display:"flex", alignItems:"center", justifyContent:"space-between",
-        background: on ? "#0d1e30" : "#0a1220",
-        border: `1px solid ${on ? "#2a5a8a" : "#1a2a3a"}`,
-        borderRadius:8, padding:"10px 12px", cursor:"pointer",
-        transition:"all 0.2s",
-      }}
-    >
+    <div onClick={() => onChange(!on)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:on?"#0d1e30":"#0a1220", border:`1px solid ${on?"#2a5a8a":"#1a2a3a"}`, borderRadius:8, padding:"10px 12px", cursor:"pointer", transition:"all 0.2s" }}>
       <div>
-        <div style={{fontSize:11, color: on ? "#81b4d4" : "#3a6a8a", fontFamily:"'DM Mono',monospace", letterSpacing:0.5}}>{label}</div>
-        {sublabel && <div style={{fontSize:9, color:"#2a4a60", marginTop:2, fontFamily:"'DM Mono',monospace"}}>{sublabel}</div>}
+        <div style={{ fontSize:11, color:on?"#81b4d4":"#3a6a8a", fontFamily:"'DM Mono',monospace", letterSpacing:0.5 }}>{label}</div>
+        {sublabel && <div style={{ fontSize:9, color:"#2a4a60", marginTop:2, fontFamily:"'DM Mono',monospace" }}>{sublabel}</div>}
       </div>
-      {/* pill toggle */}
-      <div style={{
-        width:36, height:20, borderRadius:10, flexShrink:0, marginLeft:12,
-        background: on ? "#1a4a7a" : "#0a1828",
-        border: `1px solid ${on ? "#3a7aaa" : "#1e3a55"}`,
-        position:"relative", transition:"all 0.2s",
-      }}>
-        <div style={{
-          position:"absolute", top:3, left: on ? 17 : 3,
-          width:12, height:12, borderRadius:"50%",
-          background: on ? "#4FC3F7" : "#2a4a60",
-          transition:"left 0.2s, background 0.2s",
-          boxShadow: on ? "0 0 6px #4FC3F760" : "none",
-        }}/>
+      <div style={{ width:36, height:20, borderRadius:10, flexShrink:0, marginLeft:12, background:on?"#1a4a7a":"#0a1828", border:`1px solid ${on?"#3a7aaa":"#1e3a55"}`, position:"relative", transition:"all 0.2s" }}>
+        <div style={{ position:"absolute", top:3, left:on?17:3, width:12, height:12, borderRadius:"50%", background:on?"#4FC3F7":"#2a4a60", transition:"left 0.2s, background 0.2s", boxShadow:on?"0 0 6px #4FC3F760":"none" }}/>
       </div>
     </div>
   );
 }
 
-// ─── Admin Panel ──────────────────────────────────────────────────────────────
-function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta,
-                      engState, setEngState, eta, setEta,
-                      showHot, setShowHot, onClose }) {
-  const [ambDraft,   setAmbDraft]   = useState(ambientTemp ?? "");
+function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta, engState, setEngState, eta, setEta, showHot, setShowHot, onClose }) {
+  const [ambDraft, setAmbDraft] = useState(ambientTemp ?? "");
   const [deltaDraft, setDeltaDraft] = useState(matchDelta);
-
-  const btnBase = {
-    flex:1, borderRadius:7, padding:"9px 8px", fontSize:11,
-    fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:0.5,
-    border:"1px solid", transition:"all 0.15s", textAlign:"center",
-  };
-  const activeBtn  = c => ({ ...btnBase, background:`${c}22`, borderColor:`${c}88`, color:c });
+  const btnBase = { flex:1, borderRadius:7, padding:"9px 8px", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:0.5, border:"1px solid", transition:"all 0.15s", textAlign:"center" };
+  const activeBtn = c => ({ ...btnBase, background:`${c}22`, borderColor:`${c}88`, color:c });
   const inactiveBtn = () => ({ ...btnBase, background:"#0a1828", borderColor:"#1e3a55", color:"#3a6a8a" });
-
   return (
-    <div style={{
-      position:"fixed", bottom:24, right:24, zIndex:100,
-      background:"#07111f", border:"1px solid #2a4a6a",
-      borderRadius:14, padding:"20px 22px", width:310,
-      boxShadow:"0 8px 40px #000c", fontFamily:"'DM Mono',monospace",
-      maxHeight:"90vh", overflowY:"auto",
-    }}>
-      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, paddingBottom:12, borderBottom:"1px solid #1a2d45"}}>
-        <span style={{fontSize:10, color:"#4a7fa5", letterSpacing:2}}>⚙ ENGINEERING ADMIN</span>
-        <button onClick={onClose} style={{background:"none", border:"none", color:"#3a6a8a", cursor:"pointer", fontSize:16, padding:0}}>✕</button>
+    <div style={{ position:"fixed", bottom:24, right:24, zIndex:100, background:"#07111f", border:"1px solid #2a4a6a", borderRadius:14, padding:"20px 22px", width:310, boxShadow:"0 8px 40px #000c", fontFamily:"'DM Mono',monospace", maxHeight:"90vh", overflowY:"auto" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, paddingBottom:12, borderBottom:"1px solid #1a2d45" }}>
+        <span style={{ fontSize:10, color:"#4a7fa5", letterSpacing:2 }}>⚙ ENGINEERING ADMIN</span>
+        <button onClick={onClose} style={{ background:"none", border:"none", color:"#3a6a8a", cursor:"pointer", fontSize:16, padding:0 }}>✕</button>
       </div>
-
-      {/* ── Sensor visibility ── */}
-      <div style={{marginBottom:16}}>
-        <div style={{fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8}}>SENSOR VISIBILITY</div>
-        <Toggle
-          on={showHot}
-          onChange={setShowHot}
-          label="Hot water sensors (HWS / HWR)"
-          sublabel="Hide when valves closed for service"
-        />
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8 }}>SENSOR VISIBILITY</div>
+        <Toggle on={showHot} onChange={setShowHot} label="Hot water sensors (HWS / HWR)" sublabel="Hide when valves closed for service"/>
       </div>
-
-      <div style={{borderTop:"1px solid #1a2d45", marginBottom:14}}/>
-
-      {/* ── Engineering acknowledgment ── */}
-      <div style={{marginBottom:16}}>
-        <div style={{fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8}}>BANNER STATUS OVERRIDE</div>
-        <div style={{display:"flex", flexDirection:"column", gap:7}}>
+      <div style={{ borderTop:"1px solid #1a2d45", marginBottom:14 }}/>
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8 }}>BANNER STATUS OVERRIDE</div>
+        <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
           <button onClick={()=>setEngState("none")}        style={engState==="none"        ? activeBtn("#4a7fa5") : inactiveBtn()}>No override — sensor-driven only</button>
           <button onClick={()=>setEngState("aware")}       style={engState==="aware"       ? activeBtn("#FFA726") : inactiveBtn()}>We're aware &amp; investigating</button>
           <button onClick={()=>setEngState("maintenance")} style={engState==="maintenance" ? activeBtn("#4CAF50") : inactiveBtn()}>Offline for scheduled service</button>
         </div>
         {engState==="maintenance" && (
-          <div style={{marginTop:10}}>
-            <div style={{fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5}}>ESTIMATED RETURN TO SERVICE</div>
-            <input type="text" value={eta} onChange={e=>setEta(e.target.value)}
-              placeholder="e.g. Friday, June 6 by 5:00 PM"
-              style={{width:"100%", background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6,
-                color:"#c8dff0", padding:"7px 10px", fontSize:12, fontFamily:"'DM Mono',monospace", outline:"none"}}/>
-            <div style={{fontSize:10, color:"#2a5040", marginTop:4}}>Leave blank to show "being determined"</div>
+          <div style={{ marginTop:10 }}>
+            <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5 }}>ESTIMATED RETURN TO SERVICE</div>
+            <input type="text" value={eta} onChange={e=>setEta(e.target.value)} placeholder="e.g. Friday, June 6 by 5:00 PM"
+              style={{ width:"100%", background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:12, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
+            <div style={{ fontSize:10, color:"#2a5040", marginTop:4 }}>Leave blank to show "being determined"</div>
           </div>
         )}
       </div>
-
-      <div style={{borderTop:"1px solid #1a2d45", marginBottom:14}}/>
-
-      {/* ── Ambient temp ── */}
-      <div style={{marginBottom:12}}>
-        <div style={{fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:6}}>AMBIENT TEMPERATURE (°F)</div>
-        <div style={{display:"flex", gap:8}}>
+      <div style={{ borderTop:"1px solid #1a2d45", marginBottom:14 }}/>
+      <div style={{ marginBottom:12 }}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:6 }}>AMBIENT TEMPERATURE (°F)</div>
+        <div style={{ display:"flex", gap:8 }}>
           <input type="number" value={ambDraft} onChange={e=>setAmbDraft(e.target.value)} placeholder="e.g. 72"
-            style={{flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6,
-              color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none"}}/>
+            style={{ flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
           <button onClick={()=>setAmbientTemp(ambDraft===""?null:parseFloat(ambDraft))}
-            style={{background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6,
-              color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1}}>SET</button>
+            style={{ background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6, color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1 }}>SET</button>
         </div>
         {ambientTemp!==null
-          ? <div style={{marginTop:5, fontSize:10, color:"#2a6a4a"}}>✓ Ambient {ambientTemp}°F · offline trigger ≤ {(ambientTemp-matchDelta).toFixed(1)}°F CWS</div>
-          : <div style={{marginTop:5, fontSize:10, color:"#2a4050"}}>No ambient set — fixed thresholds only.</div>}
+          ? <div style={{ marginTop:5, fontSize:10, color:"#2a6a4a" }}>✓ Ambient {ambientTemp}°F · offline trigger ≤ {(ambientTemp-matchDelta).toFixed(1)}°F CWS</div>
+          : <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>No ambient set — fixed thresholds only.</div>}
       </div>
       <div>
-        <div style={{fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5}}>AMBIENT MATCH DELTA (°F)</div>
-        <div style={{display:"flex", gap:8}}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5 }}>AMBIENT MATCH DELTA (°F)</div>
+        <div style={{ display:"flex", gap:8 }}>
           <input type="number" value={deltaDraft} onChange={e=>setDeltaDraft(e.target.value)}
-            style={{flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6,
-              color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none"}}/>
+            style={{ flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
           <button onClick={()=>setMatchDelta(parseFloat(deltaDraft)||8)}
-            style={{background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6,
-              color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1}}>SET</button>
+            style={{ background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6, color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1 }}>SET</button>
         </div>
-        <div style={{marginTop:5, fontSize:10, color:"#2a4050"}}>Offline when CWS ≥ ambient − {matchDelta}°F</div>
+        <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>Offline when CWS ≥ ambient − {matchDelta}°F</div>
       </div>
     </div>
   );
 }
 
-// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [readings, setReadings] = useState({});
-const [histories, setHistories] = useState(() => Object.fromEntries(SENSORS.map(s => [s.id, generateHistory(s.id)])));
-const [lastUpdate, setLastUpdate] = useState(new Date());
-const [apiCwsStatus, setApiCwsStatus] = useState(null);
-
-const refresh = useCallback(async () => {
-  try {
-    const res = await fetch("/api/sensors");
-    const data = await res.json();
-    if (data.readings) {
-      setReadings(data.readings);
-      setHistories(prev => Object.fromEntries(SENSORS.map(s => [s.id, 
-        data.readings[s.id] != null
-          ? [...prev[s.id].slice(-29), { time: new Date(), value: data.readings[s.id] }]
-          : prev[s.id]
-      ])));
-      setApiCwsStatus(data.cwsStatus);
-      setLastUpdate(new Date());
-    }
-  } catch (err) {
-    console.error("Failed to fetch sensor data:", err);
-  }
-}, []);
-
-  const [ambientTemp, setAmbientTemp] = useState(null);
-  const [matchDelta,  setMatchDelta]  = useState(AMBIENT_MATCH_DELTA);
-  const [engState,    setEngState]    = useState("none");
-  const [eta,         setEta]         = useState("");
-  const [showHot,     setShowHot]     = useState(true);
-  const [adminOpen,   setAdminOpen]   = useState(false);
-  const [pwModal,     setPwModal]     = useState(false);
-  const [pwDraft,     setPwDraft]     = useState("");
-  const [pwError,     setPwError]     = useState(false);
-
-  // Change this to whatever password you want
-  const ADMIN_PASSWORD = "towers";
+  const [readings,     setReadings]     = useState({});
+  const [histories,    setHistories]    = useState(() => Object.fromEntries(SENSORS.map(s => [s.id, generateHistory(s.id)])));
+  const [lastUpdate,   setLastUpdate]   = useState(new Date());
+  const [apiCwsStatus, setApiCwsStatus] = useState(null);
+  const [ambientTemp,  setAmbientTemp]  = useState(null);
+  const [matchDelta,   setMatchDelta]   = useState(AMBIENT_MATCH_DELTA);
+  const [engState,     setEngState]     = useState("none");
+  const [eta,          setEta]          = useState("");
+  const [showHot,      setShowHot]      = useState(true);
+  const [adminOpen,    setAdminOpen]    = useState(false);
+  const [pwModal,      setPwModal]      = useState(false);
+  const [pwDraft,      setPwDraft]      = useState("");
+  const [pwError,      setPwError]      = useState(false);
 
   function attemptLogin() {
     if (pwDraft === ADMIN_PASSWORD) {
-      setPwModal(false);
-      setPwDraft("");
-      setPwError(false);
-      setAdminOpen(true);
+      setPwModal(false); setPwDraft(""); setPwError(false); setAdminOpen(true);
     } else {
-      setPwError(true);
-      setPwDraft("");
+      setPwError(true); setPwDraft("");
     }
   }
 
@@ -378,19 +262,33 @@ const refresh = useCallback(async () => {
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  const refresh = useCallback(() => {
-    const nr = Object.fromEntries(SENSORS.map(s => [s.id, generateReading(s.id)]));
-    setReadings(nr);
-    setHistories(prev => Object.fromEntries(SENSORS.map(s => [s.id, [...prev[s.id].slice(-29), { time: new Date(), value: nr[s.id] }]])));
-    setLastUpdate(new Date());
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sensors");
+      const data = await res.json();
+      if (data.readings) {
+        setReadings(data.readings);
+        setHistories(prev => Object.fromEntries(SENSORS.map(s => [s.id,
+          data.readings[s.id] != null
+            ? [...prev[s.id].slice(-29), { time: new Date(), value: data.readings[s.id] }]
+            : prev[s.id]
+        ])));
+        setApiCwsStatus(data.cwsStatus);
+        setLastUpdate(new Date());
+      }
+    } catch (err) {
+      console.error("Failed to fetch sensor data:", err);
+    }
   }, []);
 
-  useEffect(() => { const id = setInterval(refresh, 30000); return () => clearInterval(id); }, [refresh]);
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
-  const cwsStatus = apiCwsStatus || getCWSStatus(readings["CHW-S"], ambientTemp, matchDelta);
+  const cwsStatus  = apiCwsStatus || getCWSStatus(readings["CHW-S"], ambientTemp, matchDelta);
   const systemMeta = STATUS_META[cwsStatus];
-
-  // Sensors and deltas filtered by visibility
   const visibleSensors = SENSORS.filter(s => showHot || s.pipe !== "hot");
 
   return (
@@ -404,10 +302,7 @@ const refresh = useCallback(async () => {
         ::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:2px}
         input:focus{border-color:#2a5a8a !important}
       `}</style>
-
-      <div style={{position:"fixed",inset:0,pointerEvents:"none",zIndex:0,
-        background:"repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,20,50,0.025) 2px,rgba(0,20,50,0.025) 4px)"}}/>
-
+      <div style={{ position:"fixed", inset:0, pointerEvents:"none", zIndex:0, background:"repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,20,50,0.025) 2px,rgba(0,20,50,0.025) 4px)" }}/>
       <div style={{ position:"relative", zIndex:1, maxWidth:960, margin:"0 auto", padding:"24px 20px" }}>
 
         {/* Header */}
@@ -415,27 +310,15 @@ const refresh = useCallback(async () => {
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:12 }}>
             <div>
               <div style={{ fontSize:10, color:"#2a5a7a", letterSpacing:3, marginBottom:3 }}>AMERICAN TOWERS · SALT LAKE CITY</div>
-              <h1 style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:30, fontWeight:700, color:"#e8f4fd", letterSpacing:1, lineHeight:1 }}>
-                HVAC INFRASTRUCTURE MONITOR
-              </h1>
+              <h1 style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:30, fontWeight:700, color:"#e8f4fd", letterSpacing:1, lineHeight:1 }}>HVAC INFRASTRUCTURE MONITOR</h1>
               <div style={{ fontSize:10, color:"#2a5a7a", letterSpacing:2, marginTop:3 }}>
                 {showHot ? "4-PIPE CHILLED WATER SYSTEM" : "CHILLED WATER LOOP · HOT WATER SENSORS OFFLINE FOR SERVICE"}
               </div>
             </div>
             <div style={{ textAlign:"right" }}>
-              <div style={{
-                display:"inline-flex", alignItems:"center", gap:8,
-                background:systemMeta.bg, border:`1px solid ${systemMeta.border}`,
-                borderRadius:8, padding:"8px 16px", marginBottom:6,
-              }}>
-                <div style={{
-                  width:8, height:8, borderRadius:"50%", background:systemMeta.color,
-                  boxShadow:`0 0 8px ${systemMeta.color}`,
-                  animation:cwsStatus!=="nominal"?"pulse 1.2s infinite":"none",
-                }}/>
-                <span style={{ fontSize:12, fontWeight:500, color:systemMeta.color, letterSpacing:2, fontFamily:"'DM Mono',monospace" }}>
-                  {systemMeta.label}
-                </span>
+              <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:systemMeta.bg, border:`1px solid ${systemMeta.border}`, borderRadius:8, padding:"8px 16px", marginBottom:6 }}>
+                <div style={{ width:8, height:8, borderRadius:"50%", background:systemMeta.color, boxShadow:`0 0 8px ${systemMeta.color}`, animation:cwsStatus!=="nominal"?"pulse 1.2s infinite":"none" }}/>
+                <span style={{ fontSize:12, fontWeight:500, color:systemMeta.color, letterSpacing:2, fontFamily:"'DM Mono',monospace" }}>{systemMeta.label}</span>
               </div>
               <div style={{ fontSize:10, color:"#1e4060" }}>{fmtDate(lastUpdate)}</div>
               <div style={{ fontSize:12, color:"#3a6a8a", fontFamily:"'DM Mono',monospace" }}>{fmtTime(lastUpdate)}</div>
@@ -446,12 +329,10 @@ const refresh = useCallback(async () => {
 
         {/* Sensor cards */}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))", gap:14, marginBottom:22 }}>
-          {visibleSensors.map(s => (
-            <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}/>
-          ))}
+          {visibleSensors.map(s => <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}/>)}
         </div>
 
-        {/* Differential — adapts to visible sensors */}
+        {/* Differential */}
         <div style={{ marginBottom:22 }}>
           <div style={{ fontSize:10, color:"#2a5a7a", letterSpacing:3, marginBottom:10 }}>DIFFERENTIAL ANALYSIS</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(175px,1fr))", gap:10 }}>
@@ -468,82 +349,37 @@ const refresh = useCallback(async () => {
         <div style={{ borderTop:"1px solid #1a2d45", paddingTop:14, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <div style={{ fontSize:9, color:"#1e3a55", letterSpacing:1 }}>DATA SOURCE: YOLINK ENVIRONMENTAL SENSORS · AUTO-REFRESH 30s</div>
-            {/* Lock button — visible to all, gate is the password modal */}
-            <button
-              onClick={() => adminOpen ? setAdminOpen(false) : setPwModal(true)}
+            <button onClick={() => adminOpen ? setAdminOpen(false) : setPwModal(true)}
               title={adminOpen ? "Close admin panel" : "Engineering admin"}
-              style={{
-                background:"transparent", border:"1px solid #1a2d3a", borderRadius:6,
-                padding:"4px 8px", color: adminOpen ? "#4a7fa5" : "#1e3a55",
-                fontSize:14, cursor:"pointer", lineHeight:1,
-                transition:"color 0.2s, border-color 0.2s",
-              }}
-            >{adminOpen ? "🔓" : "🔒"}</button>
+              style={{ background:"transparent", border:"1px solid #1a2d3a", borderRadius:6, padding:"4px 8px", color:adminOpen?"#4a7fa5":"#1e3a55", fontSize:14, cursor:"pointer", lineHeight:1 }}>
+              {adminOpen ? "🔓" : "🔒"}
+            </button>
           </div>
-          <button onClick={refresh} style={{
-            background:"transparent", border:"1px solid #1e3a5f", borderRadius:6,
-            padding:"6px 14px", color:"#3a6a8a", fontSize:10,
-            fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:1,
-          }}>↺ REFRESH NOW</button>
+          <button onClick={refresh} style={{ background:"transparent", border:"1px solid #1e3a5f", borderRadius:6, padding:"6px 14px", color:"#3a6a8a", fontSize:10, fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:1 }}>↺ REFRESH NOW</button>
         </div>
       </div>
 
       {/* Password modal */}
       {pwModal && (
-        <div
-          onClick={e => { if (e.target === e.currentTarget) { setPwModal(false); setPwDraft(""); setPwError(false); }}}
-          style={{
-            position:"fixed", inset:0, zIndex:200,
-            background:"rgba(0,5,15,0.75)", backdropFilter:"blur(4px)",
-            display:"flex", alignItems:"center", justifyContent:"center",
-          }}
-        >
-          <div style={{
-            background:"#07111f", border:"1px solid #2a4a6a",
-            borderRadius:14, padding:"28px 28px 24px",
-            width:300, boxShadow:"0 12px 50px #000e",
-            fontFamily:"'DM Mono',monospace",
-          }}>
+        <div onClick={e => { if (e.target===e.currentTarget) { setPwModal(false); setPwDraft(""); setPwError(false); }}}
+          style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,5,15,0.75)", backdropFilter:"blur(4px)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ background:"#07111f", border:"1px solid #2a4a6a", borderRadius:14, padding:"28px 28px 24px", width:300, boxShadow:"0 12px 50px #000e", fontFamily:"'DM Mono',monospace" }}>
             <div style={{ textAlign:"center", marginBottom:20 }}>
               <div style={{ fontSize:28, marginBottom:8 }}>🔒</div>
               <div style={{ fontSize:11, color:"#4a7fa5", letterSpacing:2 }}>ENGINEERING ACCESS</div>
             </div>
-            <input
-              autoFocus
-              type="password"
-              value={pwDraft}
+            <input autoFocus type="password" value={pwDraft}
               onChange={e => { setPwDraft(e.target.value); setPwError(false); }}
-              onKeyDown={e => e.key === "Enter" && attemptLogin()}
+              onKeyDown={e => e.key==="Enter" && attemptLogin()}
               placeholder="Password"
-              style={{
-                width:"100%", background:"#0a1828",
-                border:`1px solid ${pwError ? "#EF5350" : "#1e3a55"}`,
-                borderRadius:7, color:"#c8dff0", padding:"10px 12px",
-                fontSize:14, fontFamily:"'DM Mono',monospace", outline:"none",
-                marginBottom:6, textAlign:"center", letterSpacing:3,
-              }}
-            />
-            {pwError && (
-              <div style={{ fontSize:10, color:"#EF5350", textAlign:"center", marginBottom:8, letterSpacing:1 }}>
-                Incorrect password
-              </div>
-            )}
+              style={{ width:"100%", background:"#0a1828", border:`1px solid ${pwError?"#EF5350":"#1e3a55"}`, borderRadius:7, color:"#c8dff0", padding:"10px 12px", fontSize:14, fontFamily:"'DM Mono',monospace", outline:"none", marginBottom:6, textAlign:"center", letterSpacing:3 }}/>
+            {pwError && <div style={{ fontSize:10, color:"#EF5350", textAlign:"center", marginBottom:8, letterSpacing:1 }}>Incorrect password</div>}
             {!pwError && <div style={{ marginBottom:8 }}/>}
             <div style={{ display:"flex", gap:8 }}>
-              <button
-                onClick={() => { setPwModal(false); setPwDraft(""); setPwError(false); }}
-                style={{
-                  flex:1, background:"transparent", border:"1px solid #1e3a55",
-                  borderRadius:7, color:"#3a6a8a", padding:"9px", fontSize:11,
-                  fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:1,
-                }}>CANCEL</button>
-              <button
-                onClick={attemptLogin}
-                style={{
-                  flex:1, background:"#1a3a5a", border:"1px solid #2a5a8a",
-                  borderRadius:7, color:"#81b4d4", padding:"9px", fontSize:11,
-                  fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:1,
-                }}>UNLOCK</button>
+              <button onClick={() => { setPwModal(false); setPwDraft(""); setPwError(false); }}
+                style={{ flex:1, background:"transparent", border:"1px solid #1e3a55", borderRadius:7, color:"#3a6a8a", padding:"9px", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:1 }}>CANCEL</button>
+              <button onClick={attemptLogin}
+                style={{ flex:1, background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:7, color:"#81b4d4", padding:"9px", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:1 }}>UNLOCK</button>
             </div>
           </div>
         </div>
