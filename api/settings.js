@@ -7,20 +7,25 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // GET — read current settings
+  const DEFAULT_SETTINGS = {
+    showHot: true,
+    engState: "none",
+    eta: "",
+    situationFlag: "",
+    alertRecipients: [],
+    warnCooldownHours: 4,
+    sendRecoveryEmails: true,
+  };
+
   if (req.method === "GET") {
     const settings = await redis.get("hvac-settings");
-    return res.status(200).json(settings || {
-      showHot: true,
-      engState: "none",
-      eta: "",
-    });
+    return res.status(200).json({ ...DEFAULT_SETTINGS, ...settings });
   }
 
-  // POST — save settings (admin only, password checked client-side)
   if (req.method === "POST") {
-    const { showHot, engState, eta } = req.body;
-    await redis.set("hvac-settings", { showHot, engState, eta });
+    const current = await redis.get("hvac-settings") || {};
+    const updated = { ...DEFAULT_SETTINGS, ...current, ...req.body };
+    await redis.set("hvac-settings", updated);
     return res.status(200).json({ ok: true });
   }
 

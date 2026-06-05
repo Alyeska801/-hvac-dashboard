@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
 const SENSORS = [
   { id: "CHW-S", label: "Chilled Water", role: "Supply", color: "#4FC3F7", pipe: "cold" },
@@ -19,6 +20,7 @@ const GAUGE_RANGES = {
 const BASELINES = { "CHW-S": 52, "CHW-R": 62, "HHW-S": 140, "HHW-R": 120 };
 const AMBIENT_MATCH_DELTA = 8;
 const ADMIN_PASSWORD = "towers";
+const OWNER_PASSWORD = "alyeska";
 
 function getCWSStatus(cwsTemp, ambientTemp, matchDelta = AMBIENT_MATCH_DELTA) {
   if (cwsTemp == null) return "nominal";
@@ -55,7 +57,13 @@ function getSensorStatus(id, val) {
 }
 function fmtTime(d) { return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 function fmtDate(d) { return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }); }
+function fmtChartTime(ts, window) {
+  const d = new Date(ts);
+  if (window === "24h") return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
+// ─── Sparkline ────────────────────────────────────────────────────────────────
 function Sparkline({ data, color, width = 210, height = 34 }) {
   if (!data || data.length < 2) return null;
   const vals = data.map(d => d.value);
@@ -75,6 +83,43 @@ function Sparkline({ data, color, width = 210, height = 34 }) {
   );
 }
 
+// ─── Uptime Bar ───────────────────────────────────────────────────────────────
+function UptimeBar({ uptime }) {
+  if (!uptime) return null;
+  const { nominal, degraded, offline, segments } = uptime;
+  const statusColor = { nominal: "#4CAF50", degraded: "#FFA726", offline: "#EF5350", unknown: "#1e2d45" };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+        <span style={{ fontSize: 9, color: "#3a6a8a", fontFamily: "'DM Mono',monospace", letterSpacing: 1 }}>7-DAY UPTIME</span>
+        <div style={{ display: "flex", gap: 10 }}>
+          {[["NOMINAL", nominal, "#4CAF50"], ["DEGRADED", degraded, "#FFA726"], ["OFFLINE", offline, "#EF5350"]].map(([label, pct, color]) => (
+            <span key={label} style={{ fontSize: 9, fontFamily: "'DM Mono',monospace", color }}>
+              {label} {pct}%
+            </span>
+          ))}
+        </div>
+      </div>
+      {/* Segmented bar */}
+      <div style={{ height: 8, borderRadius: 4, overflow: "hidden", display: "flex", background: "#1e2d45" }}>
+        {segments && segments.map((seg, i) => (
+          <div key={i} style={{
+            flex: 1,
+            background: statusColor[seg.status],
+            opacity: 0.85,
+          }} title={`${new Date(seg.ts).toLocaleString()} — ${seg.status.toUpperCase()}`}/>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
+        <span style={{ fontSize: 8, color: "#1e3a55", fontFamily: "'DM Mono',monospace" }}>7 days ago</span>
+        <span style={{ fontSize: 8, color: "#1e3a55", fontFamily: "'DM Mono',monospace" }}>now</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Gauge ────────────────────────────────────────────────────────────────────
 function Gauge({ value, min, max, color, status }) {
   const pct = Math.max(0, Math.min(1, ((value ?? min) - min) / (max - min)));
   const nc = { normal: "#4CAF50", warning: "#FFA726", critical: "#EF5350" }[status] || "#ccc";
@@ -91,12 +136,14 @@ function Gauge({ value, min, max, color, status }) {
   );
 }
 
-function SensorCard({ sensor, reading, history }) {
+// ─── Sensor Card ──────────────────────────────────────────────────────────────
+function SensorCard({ sensor, reading, history, uptime, onAnalyze }) {
   const status = getSensorStatus(sensor.id, reading);
   const sdot = { normal: "#4CAF50", warning: "#FFA726", critical: "#EF5350" }[status];
   const sbg  = { normal: "#1b3a2a", warning: "#3a2a0a", critical: "#3a0a0a" }[status];
   const slbl = { normal: "NOMINAL", warning: "ELEVATED", critical: "ALERT" }[status];
   const [gMin, gMax] = GAUGE_RANGES[sensor.id];
+  const isCWS = sensor.id === "CHW-S";
   return (
     <div style={{ background:"linear-gradient(135deg,#0d1b2e 0%,#0a1525 100%)", border:"1px solid #1e2d45", borderRadius:12, padding:"18px 18px 14px", position:"relative", overflow:"hidden" }}>
       <div style={{ position:"absolute", top:12, right:12, background:sbg, border:`1px solid ${sdot}40`, borderRadius:20, padding:"3px 10px", display:"flex", alignItems:"center", gap:5 }}>
@@ -115,10 +162,23 @@ function SensorCard({ sensor, reading, history }) {
         </div>
       </div>
       <div style={{ marginTop:10 }}><Sparkline data={history} color={sensor.color}/></div>
+      {isCWS && <UptimeBar uptime={uptime}/>}
+      {isCWS && (
+        <button onClick={onAnalyze} style={{
+          marginTop:10, width:"100%", background:"#0a1828",
+          border:"1px solid #1e3a55", borderRadius:6, color:"#4a7fa5",
+          padding:"7px", fontSize:10, fontFamily:"'DM Mono',monospace",
+          cursor:"pointer", letterSpacing:1, transition:"all 0.2s",
+        }}
+          onMouseEnter={e => { e.target.style.borderColor="#4a7fa5"; e.target.style.color="#81b4d4"; }}
+          onMouseLeave={e => { e.target.style.borderColor="#1e3a55"; e.target.style.color="#4a7fa5"; }}
+        >🔍 ANALYZE OUTAGES</button>
+      )}
     </div>
   );
 }
 
+// ─── Delta Badge ──────────────────────────────────────────────────────────────
 function DeltaBadge({ label, a, b, colorA, colorB }) {
   if (a == null || b == null) return null;
   const delta = +(b - a).toFixed(1);
@@ -136,27 +196,188 @@ function DeltaBadge({ label, a, b, colorA, colorB }) {
   );
 }
 
-function StatusBanner({ cwsStatus, engState, eta }) {
+// ─── Status Banner ────────────────────────────────────────────────────────────
+function StatusBanner({ cwsStatus, engState, eta, situationFlag }) {
   const meta = STATUS_META[cwsStatus];
-  if (cwsStatus === "nominal" && engState === "none") return null;
+  if (cwsStatus === "nominal" && engState === "none" && !situationFlag) return null;
   let msg = meta.baseMsg || "";
   if (engState === "aware") msg = [msg, ENG_STATES.aware.suffix].filter(Boolean).join(" ");
   else if (engState === "maintenance") {
     const etaPart = eta ? `Estimated return to service: ${eta}.` : "Return to service time is being determined.";
     msg = [msg, "System is offline for scheduled maintenance.", etaPart].filter(Boolean).join(" ");
   }
+  if (situationFlag) msg = [msg, situationFlag].filter(Boolean).join(" ");
   if (!msg) return null;
   return (
     <div style={{ marginTop:16, background:meta.bg, border:`1px solid ${meta.border}`, borderRadius:8, padding:"11px 16px", display:"flex", alignItems:"flex-start", gap:10 }}>
-      <span style={{ fontSize:14, marginTop:1, flexShrink:0 }}>{cwsStatus==="offline"?"🔴":"🟡"}</span>
-      <span style={{ fontSize:13, color:cwsStatus==="offline"?"#ef9a9a":"#ffcc80", lineHeight:1.6 }}>{msg}</span>
+      <span style={{ fontSize:14, marginTop:1, flexShrink:0 }}>{cwsStatus==="offline"?"🔴":cwsStatus==="degraded"?"🟡":"🔵"}</span>
+      <span style={{ fontSize:13, color:cwsStatus==="offline"?"#ef9a9a":cwsStatus==="degraded"?"#ffcc80":"#90caf9", lineHeight:1.6 }}>{msg}</span>
     </div>
   );
 }
 
-function Toggle({ on, onChange, label, sublabel }) {
+// ─── History Chart ────────────────────────────────────────────────────────────
+function HistoryChart({ window, setWindow }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/history?window=${window}`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [window]);
+
+  const windows = ["24h", "1m", "3m", "6m"];
+  const windowLabels = { "24h": "24 Hours", "1m": "1 Month", "3m": "3 Months", "6m": "6 Months" };
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    return (
+      <div style={{ background:"#07111f", border:"1px solid #1e3a55", borderRadius:8, padding:"10px 14px", fontFamily:"'DM Mono',monospace" }}>
+        <div style={{ fontSize:10, color:"#3a6a8a", marginBottom:6 }}>{fmtChartTime(label, window)}</div>
+        {payload.map(p => (
+          <div key={p.dataKey} style={{ fontSize:12, color:p.color }}>
+            {p.dataKey}: {p.value}°F
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
-    <div onClick={() => onChange(!on)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:on?"#0d1e30":"#0a1220", border:`1px solid ${on?"#2a5a8a":"#1a2a3a"}`, borderRadius:8, padding:"10px 12px", cursor:"pointer", transition:"all 0.2s" }}>
+    <div style={{ background:"#0a1525", border:"1px solid #1e2d45", borderRadius:12, padding:"20px", marginBottom:22 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:8 }}>
+        <div style={{ fontSize:10, color:"#2a5a7a", letterSpacing:3 }}>CHILLED WATER TEMPERATURE HISTORY</div>
+        <div style={{ display:"flex", gap:6 }}>
+          {windows.map(w => (
+            <button key={w} onClick={() => setWindow(w)} style={{
+              background: window===w ? "#1a3a5a" : "transparent",
+              border: `1px solid ${window===w ? "#2a5a8a" : "#1e2d45"}`,
+              borderRadius:6, color: window===w ? "#81b4d4" : "#3a6a8a",
+              padding:"4px 10px", fontSize:10, fontFamily:"'DM Mono',monospace",
+              cursor:"pointer", letterSpacing:1,
+            }}>{windowLabels[w]}</button>
+          ))}
+        </div>
+      </div>
+      {loading ? (
+        <div style={{ height:200, display:"flex", alignItems:"center", justifyContent:"center", color:"#2a4a6a", fontFamily:"'DM Mono',monospace", fontSize:11 }}>
+          LOADING DATA...
+        </div>
+      ) : !data?.points?.length ? (
+        <div style={{ height:200, display:"flex", alignItems:"center", justifyContent:"center", color:"#2a4a6a", fontFamily:"'DM Mono',monospace", fontSize:11 }}>
+          NO DATA FOR THIS WINDOW YET
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={data.points} margin={{ top:5, right:10, left:0, bottom:5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e2d45" />
+            <XAxis dataKey="ts" tickFormatter={ts => fmtChartTime(ts, window)}
+              tick={{ fill:"#3a6a8a", fontSize:9, fontFamily:"'DM Mono',monospace" }}
+              tickLine={false} axisLine={{ stroke:"#1e2d45" }}
+              interval="preserveStartEnd" />
+            <YAxis tick={{ fill:"#3a6a8a", fontSize:9, fontFamily:"'DM Mono',monospace" }}
+              tickLine={false} axisLine={false} domain={["auto","auto"]}
+              tickFormatter={v => `${v}°`} width={35} />
+            <Tooltip content={<CustomTooltip/>} />
+            <Legend wrapperStyle={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:"#4a7fa5" }} />
+            <ReferenceLine y={57} stroke="#FFA726" strokeDasharray="4 4" strokeOpacity={0.5} label={{ value:"DEGRADED", fill:"#FFA726", fontSize:8, fontFamily:"'DM Mono',monospace" }} />
+            <ReferenceLine y={65} stroke="#EF5350" strokeDasharray="4 4" strokeOpacity={0.5} label={{ value:"OFFLINE", fill:"#EF5350", fontSize:8, fontFamily:"'DM Mono',monospace" }} />
+            <Line type="monotone" dataKey="CHW-S" name="CW Supply" stroke="#4FC3F7" strokeWidth={1.5} dot={false} connectNulls />
+            <Line type="monotone" dataKey="CHW-R" name="CW Return" stroke="#81D4FA" strokeWidth={1.5} dot={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+// ─── Outage Analysis Modal ────────────────────────────────────────────────────
+function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
+  const [analysis, setAnalysis] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function runAnalysis() {
+      try {
+        // Fetch 6 months of history for analysis
+        const histRes = await fetch("/api/history?window=6m");
+        const histData = await histRes.json();
+        const points = histData?.points || [];
+
+        // Build a condensed summary for the AI
+        const summary = points
+          .filter((_, i) => i % 12 === 0) // every hour
+          .map(p => `${new Date(p.ts).toISOString().slice(0,16)} ${p["CHW-S"]}°F`)
+          .join("\n");
+
+        const prompt = `You are analyzing HVAC chilled water supply (CWS) temperature data for American Towers, a high-rise condo building in Salt Lake City. The building's chiller has been experiencing issues.
+
+CURRENT STATUS: ${cwsStatus.toUpperCase()} — CWS is currently ${currentReading}°F
+(Nominal = below 57°F, Degraded = 57-65°F, Offline = above 65°F or approaching ambient)
+
+HISTORICAL CWS TEMPERATURE DATA (hourly samples, last 6 months):
+${summary}
+
+Please provide:
+1. A summary of confirmed outage events — start time, peak temperature, duration, recovery time
+2. Pattern analysis — time of day, day of week, seasonal trends, conditions that precede outages
+3. Current situation assessment — how does the current reading compare to pre-outage signatures
+4. Predictive assessment — based on historical patterns, what is the likely trajectory if currently degraded, or how stable is recovery if recently recovered
+5. A brief recommendation for building engineering
+
+Be specific with dates and temperatures. Write in plain English suitable for both engineers and HOA board members.`;
+
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1000,
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+        const data = await response.json();
+        const text = data.content?.find(b => b.type === "text")?.text || "Analysis unavailable.";
+        setAnalysis(text);
+      } catch (err) {
+        setAnalysis("Failed to generate analysis. Please try again.");
+      }
+      setLoading(false);
+    }
+    runAnalysis();
+  }, []);
+
+  return (
+    <div onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ position:"fixed", inset:0, zIndex:300, background:"rgba(0,5,15,0.85)", backdropFilter:"blur(4px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+      <div style={{ background:"#07111f", border:"1px solid #2a4a6a", borderRadius:14, padding:"24px 28px", width:"100%", maxWidth:680, maxHeight:"80vh", overflowY:"auto", boxShadow:"0 12px 50px #000e", fontFamily:"'DM Mono',monospace" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, paddingBottom:14, borderBottom:"1px solid #1a2d45" }}>
+          <div>
+            <div style={{ fontSize:14, color:"#e8f4fd", fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, letterSpacing:1 }}>CHILLER OUTAGE ANALYSIS</div>
+            <div style={{ fontSize:10, color:"#3a6a8a", letterSpacing:1, marginTop:2 }}>AI-POWERED · BASED ON HISTORICAL SENSOR DATA</div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"#3a6a8a", cursor:"pointer", fontSize:18, padding:0 }}>✕</button>
+        </div>
+        {loading ? (
+          <div style={{ padding:"40px 0", textAlign:"center" }}>
+            <div style={{ fontSize:11, color:"#3a6a8a", letterSpacing:2, marginBottom:12 }}>ANALYZING 6 MONTHS OF DATA...</div>
+            <div style={{ fontSize:10, color:"#1e3a55" }}>Identifying outage events and patterns</div>
+          </div>
+        ) : (
+          <div style={{ fontSize:13, color:"#c8dff0", lineHeight:1.8, whiteSpace:"pre-wrap" }}>{analysis}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Toggle ───────────────────────────────────────────────────────────────────
+function Toggle({ on, onChange, label, sublabel, locked }) {
+  return (
+    <div onClick={() => !locked && onChange(!on)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:on?"#0d1e30":"#0a1220", border:`1px solid ${on?"#2a5a8a":"#1a2a3a"}`, borderRadius:8, padding:"10px 12px", cursor:locked?"default":"pointer", transition:"all 0.2s", opacity:locked?0.5:1 }}>
       <div>
         <div style={{ fontSize:11, color:on?"#81b4d4":"#3a6a8a", fontFamily:"'DM Mono',monospace", letterSpacing:0.5 }}>{label}</div>
         {sublabel && <div style={{ fontSize:9, color:"#2a4a60", marginTop:2, fontFamily:"'DM Mono',monospace" }}>{sublabel}</div>}
@@ -168,26 +389,70 @@ function Toggle({ on, onChange, label, sublabel }) {
   );
 }
 
+// ─── Admin Panel ──────────────────────────────────────────────────────────────
 function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta,
                       engState, setEngState, eta, setEta,
-                      showHot, setShowHot, onClose, onSave, saving }) {
+                      showHot, setShowHot, situationFlag, setSituationFlag,
+                      alertRecipients, setAlertRecipients,
+                      sendRecoveryEmails, setSendRecoveryEmails,
+                      warnCooldownHours, setWarnCooldownHours,
+                      onClose, onSave, saving }) {
   const [ambDraft, setAmbDraft] = useState(ambientTemp ?? "");
   const [deltaDraft, setDeltaDraft] = useState(matchDelta);
+  const [ownerUnlocked, setOwnerUnlocked] = useState(false);
+  const [ownerDraft, setOwnerDraft] = useState("");
+  const [ownerError, setOwnerError] = useState(false);
+
   const btnBase = { flex:1, borderRadius:7, padding:"9px 8px", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", letterSpacing:0.5, border:"1px solid", transition:"all 0.15s", textAlign:"center" };
   const activeBtn = c => ({ ...btnBase, background:`${c}22`, borderColor:`${c}88`, color:c });
   const inactiveBtn = () => ({ ...btnBase, background:"#0a1828", borderColor:"#1e3a55", color:"#3a6a8a" });
+
   return (
-    <div style={{ position:"fixed", bottom:24, right:24, zIndex:100, background:"#07111f", border:"1px solid #2a4a6a", borderRadius:14, padding:"20px 22px", width:310, boxShadow:"0 8px 40px #000c", fontFamily:"'DM Mono',monospace", maxHeight:"90vh", overflowY:"auto" }}>
+    <div style={{ position:"fixed", bottom:24, right:24, zIndex:100, background:"#07111f", border:"1px solid #2a4a6a", borderRadius:14, padding:"20px 22px", width:320, boxShadow:"0 8px 40px #000c", fontFamily:"'DM Mono',monospace", maxHeight:"90vh", overflowY:"auto" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, paddingBottom:12, borderBottom:"1px solid #1a2d45" }}>
         <span style={{ fontSize:10, color:"#4a7fa5", letterSpacing:2 }}>⚙ ENGINEERING ADMIN</span>
         <button onClick={onClose} style={{ background:"none", border:"none", color:"#3a6a8a", cursor:"pointer", fontSize:16, padding:0 }}>✕</button>
       </div>
-      <div style={{ marginBottom:16 }}>
-        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8 }}>SENSOR VISIBILITY</div>
-        <Toggle on={showHot} onChange={setShowHot} label="Hot water sensors (HWS / HWR)" sublabel="Hide when valves closed for service"/>
+
+      {/* ── Sensor visibility (owner only) ── */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1 }}>SENSOR VISIBILITY</div>
+          {!ownerUnlocked && (
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <input type="password" value={ownerDraft} onChange={e => { setOwnerDraft(e.target.value); setOwnerError(false); }}
+                onKeyDown={e => {
+                  if (e.key === "Enter") {
+                    if (ownerDraft === OWNER_PASSWORD) { setOwnerUnlocked(true); setOwnerDraft(""); }
+                    else { setOwnerError(true); setOwnerDraft(""); }
+                  }
+                }}
+                placeholder="Owner PIN"
+                style={{ width:90, background:"#0a1828", border:`1px solid ${ownerError?"#EF5350":"#1e3a55"}`, borderRadius:5, color:"#c8dff0", padding:"4px 8px", fontSize:10, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
+              <span style={{ fontSize:9, color:"#1e3a55" }}>🔒</span>
+            </div>
+          )}
+          {ownerUnlocked && <span style={{ fontSize:9, color:"#4CAF50" }}>🔓 UNLOCKED</span>}
+        </div>
+        <Toggle on={showHot} onChange={setShowHot} locked={!ownerUnlocked}
+          label="Hot water sensors (HWS / HWR)" sublabel="Hide when valves closed for service"/>
       </div>
+
       <div style={{ borderTop:"1px solid #1a2d45", marginBottom:14 }}/>
-      <div style={{ marginBottom:16 }}>
+
+      {/* ── Situation flag ── */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:6 }}>SITUATION NOTE (shown on dashboard)</div>
+        <textarea value={situationFlag} onChange={e => setSituationFlag(e.target.value)}
+          placeholder="e.g. Chiller compressor replaced, monitoring for stability..."
+          rows={2}
+          style={{ width:"100%", background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:11, fontFamily:"'DM Mono',monospace", outline:"none", resize:"vertical" }}/>
+      </div>
+
+      <div style={{ borderTop:"1px solid #1a2d45", marginBottom:14 }}/>
+
+      {/* ── Banner override ── */}
+      <div style={{ marginBottom:14 }}>
         <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8 }}>BANNER STATUS OVERRIDE</div>
         <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
           <button onClick={()=>setEngState("none")}        style={engState==="none"        ? activeBtn("#4a7fa5") : inactiveBtn()}>No override — sensor-driven only</button>
@@ -199,39 +464,66 @@ function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta,
             <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5 }}>ESTIMATED RETURN TO SERVICE</div>
             <input type="text" value={eta} onChange={e=>setEta(e.target.value)} placeholder="e.g. Friday, June 6 by 5:00 PM"
               style={{ width:"100%", background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:12, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
-            <div style={{ fontSize:10, color:"#2a5040", marginTop:4 }}>Leave blank to show "being determined"</div>
           </div>
         )}
       </div>
+
       <div style={{ borderTop:"1px solid #1a2d45", marginBottom:14 }}/>
-      <div style={{ marginBottom:12 }}>
-        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:6 }}>AMBIENT TEMPERATURE (°F)</div>
-        <div style={{ display:"flex", gap:8 }}>
-          <input type="number" value={ambDraft} onChange={e=>setAmbDraft(e.target.value)} placeholder="e.g. 72"
-            style={{ flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
-          <button onClick={()=>setAmbientTemp(ambDraft===""?null:parseFloat(ambDraft))}
-            style={{ background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6, color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1 }}>SET</button>
-        </div>
-        {ambientTemp!==null
-          ? <div style={{ marginTop:5, fontSize:10, color:"#2a6a4a" }}>✓ Ambient {ambientTemp}°F · offline trigger ≤ {(ambientTemp-matchDelta).toFixed(1)}°F CWS</div>
-          : <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>No ambient set — fixed thresholds only.</div>}
+
+      {/* ── Alert recipients ── */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:6 }}>ALERT RECIPIENTS (one per line)</div>
+        <textarea
+          value={alertRecipients.join("\n")}
+          onChange={e => setAlertRecipients(e.target.value.split("\n").map(s => s.trim()).filter(Boolean))}
+          placeholder={"engineer@building.com\nmanager@building.com"}
+          rows={4}
+          style={{ width:"100%", background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:11, fontFamily:"'DM Mono',monospace", outline:"none", resize:"vertical" }}/>
       </div>
-      <div style={{ marginBottom:16 }}>
-        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5 }}>AMBIENT MATCH DELTA (°F)</div>
-        <div style={{ display:"flex", gap:8 }}>
-          <input type="number" value={deltaDraft} onChange={e=>setDeltaDraft(e.target.value)}
-            style={{ flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
-          <button onClick={()=>setMatchDelta(parseFloat(deltaDraft)||8)}
-            style={{ background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6, color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1 }}>SET</button>
+
+      {/* ── Notification settings ── */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:8 }}>NOTIFICATION SETTINGS</div>
+        <Toggle on={sendRecoveryEmails} onChange={setSendRecoveryEmails}
+          label="Send recovery emails" sublabel="Notify when system returns to nominal"/>
+        <div style={{ marginTop:8, display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ fontSize:10, color:"#3a6080", flex:1 }}>Warning cooldown (hours)</div>
+          <input type="number" value={warnCooldownHours} onChange={e => setWarnCooldownHours(parseFloat(e.target.value)||4)}
+            style={{ width:60, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:5, color:"#c8dff0", padding:"5px 8px", fontSize:12, fontFamily:"'DM Mono',monospace", outline:"none", textAlign:"center" }}/>
         </div>
-        <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>Offline when CWS ≥ ambient − {matchDelta}°F</div>
       </div>
-      {/* Save to server button */}
+
+      {ownerUnlocked && <>
+        <div style={{ borderTop:"1px solid #1a2d45", marginBottom:14 }}/>
+        {/* ── Ambient temp (owner only) ── */}
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:6 }}>AMBIENT TEMPERATURE (°F)</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input type="number" value={ambDraft} onChange={e=>setAmbDraft(e.target.value)} placeholder="e.g. 72"
+              style={{ flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
+            <button onClick={()=>setAmbientTemp(ambDraft===""?null:parseFloat(ambDraft))}
+              style={{ background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6, color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1 }}>SET</button>
+          </div>
+          {ambientTemp!==null
+            ? <div style={{ marginTop:5, fontSize:10, color:"#2a6a4a" }}>✓ Ambient {ambientTemp}°F · offline trigger ≤ {(ambientTemp-matchDelta).toFixed(1)}°F</div>
+            : <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>No ambient set — fixed thresholds only.</div>}
+        </div>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:10, color:"#3a6080", letterSpacing:1, marginBottom:5 }}>AMBIENT MATCH DELTA (°F)</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input type="number" value={deltaDraft} onChange={e=>setDeltaDraft(e.target.value)}
+              style={{ flex:1, background:"#0a1828", border:"1px solid #1e3a55", borderRadius:6, color:"#c8dff0", padding:"7px 10px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
+            <button onClick={()=>setMatchDelta(parseFloat(deltaDraft)||8)}
+              style={{ background:"#1a3a5a", border:"1px solid #2a5a8a", borderRadius:6, color:"#81b4d4", fontSize:11, fontFamily:"'DM Mono',monospace", cursor:"pointer", padding:"7px 12px", letterSpacing:1 }}>SET</button>
+          </div>
+          <div style={{ marginTop:5, fontSize:10, color:"#2a4050" }}>Offline when CWS ≥ ambient − {matchDelta}°F</div>
+        </div>
+      </>}
+
       <button onClick={onSave} disabled={saving} style={{
-        width:"100%", background: saving ? "#0a1828" : "#1a3a5a",
-        border:"1px solid #2a5a8a", borderRadius:8, color: saving ? "#3a6a8a" : "#81b4d4",
-        padding:"10px", fontSize:11, fontFamily:"'DM Mono',monospace",
-        cursor: saving ? "default" : "pointer", letterSpacing:1, marginTop:4,
+        width:"100%", background:saving?"#0a1828":"#1a3a5a", border:"1px solid #2a5a8a",
+        borderRadius:8, color:saving?"#3a6a8a":"#81b4d4", padding:"10px",
+        fontSize:11, fontFamily:"'DM Mono',monospace", cursor:saving?"default":"pointer", letterSpacing:1,
       }}>
         {saving ? "SAVING..." : "💾 SAVE SETTINGS FOR ALL VIEWERS"}
       </button>
@@ -239,55 +531,67 @@ function AdminPanel({ ambientTemp, setAmbientTemp, matchDelta, setMatchDelta,
   );
 }
 
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [readings,     setReadings]     = useState({});
   const [histories,    setHistories]    = useState(() => Object.fromEntries(SENSORS.map(s => [s.id, generateHistory(s.id)])));
   const [lastUpdate,   setLastUpdate]   = useState(new Date());
   const [apiCwsStatus, setApiCwsStatus] = useState(null);
-  const [ambientTemp,  setAmbientTemp]  = useState(null);
-  const [matchDelta,   setMatchDelta]   = useState(AMBIENT_MATCH_DELTA);
-  const [engState,     setEngState]     = useState("none");
-  const [eta,          setEta]          = useState("");
-  const [showHot,      setShowHot]      = useState(true);
-  const [adminOpen,    setAdminOpen]    = useState(false);
-  const [pwModal,      setPwModal]      = useState(false);
-  const [pwDraft,      setPwDraft]      = useState("");
-  const [pwError,      setPwError]      = useState(false);
-  const [saving,       setSaving]       = useState(false);
+  const [uptime,       setUptime]       = useState(null);
+  const [histWindow,   setHistWindow]   = useState("24h");
+  const [showAnalysis, setShowAnalysis] = useState(false);
+
+  const [ambientTemp,       setAmbientTemp]       = useState(null);
+  const [matchDelta,        setMatchDelta]         = useState(AMBIENT_MATCH_DELTA);
+  const [engState,          setEngState]           = useState("none");
+  const [eta,               setEta]               = useState("");
+  const [situationFlag,     setSituationFlag]      = useState("");
+  const [showHot,           setShowHot]            = useState(true);
+  const [alertRecipients,   setAlertRecipients]    = useState([]);
+  const [sendRecoveryEmails,setSendRecoveryEmails] = useState(true);
+  const [warnCooldownHours, setWarnCooldownHours]  = useState(4);
+  const [adminOpen,         setAdminOpen]          = useState(false);
+  const [pwModal,           setPwModal]            = useState(false);
+  const [pwDraft,           setPwDraft]            = useState("");
+  const [pwError,           setPwError]            = useState(false);
+  const [saving,            setSaving]             = useState(false);
 
   // Load settings from server on mount
   useEffect(() => {
-    fetch("/api/settings")
-      .then(r => r.json())
-      .then(s => {
-        if (s.showHot !== undefined) setShowHot(s.showHot);
-        if (s.engState)              setEngState(s.engState);
-        if (s.eta !== undefined)     setEta(s.eta);
-      })
-      .catch(console.error);
+    fetch("/api/settings").then(r => r.json()).then(s => {
+      if (s.showHot !== undefined)          setShowHot(s.showHot);
+      if (s.engState)                       setEngState(s.engState);
+      if (s.eta !== undefined)              setEta(s.eta);
+      if (s.situationFlag !== undefined)    setSituationFlag(s.situationFlag);
+      if (s.alertRecipients)               setAlertRecipients(s.alertRecipients);
+      if (s.sendRecoveryEmails !== undefined) setSendRecoveryEmails(s.sendRecoveryEmails);
+      if (s.warnCooldownHours)             setWarnCooldownHours(s.warnCooldownHours);
+    }).catch(console.error);
   }, []);
 
-  // Save settings to server
+  // Load uptime on mount
+  useEffect(() => {
+    fetch("/api/history?window=24h").then(r => r.json()).then(d => {
+      if (d.uptime) setUptime(d.uptime);
+    }).catch(console.error);
+  }, []);
+
   async function saveSettings() {
     setSaving(true);
     try {
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ showHot, engState, eta }),
+        body: JSON.stringify({ showHot, engState, eta, situationFlag, alertRecipients, sendRecoveryEmails, warnCooldownHours }),
       });
-    } catch (err) {
-      console.error("Failed to save settings:", err);
-    }
+    } catch (err) { console.error(err); }
     setSaving(false);
   }
 
   function attemptLogin() {
     if (pwDraft === ADMIN_PASSWORD) {
       setPwModal(false); setPwDraft(""); setPwError(false); setAdminOpen(true);
-    } else {
-      setPwError(true); setPwDraft("");
-    }
+    } else { setPwError(true); setPwDraft(""); }
   }
 
   const keyBuffer = useRef("");
@@ -315,9 +619,7 @@ export default function App() {
         setApiCwsStatus(data.cwsStatus);
         setLastUpdate(new Date());
       }
-    } catch (err) {
-      console.error("Failed to fetch sensor data:", err);
-    }
+    } catch (err) { console.error(err); }
   }, []);
 
   useEffect(() => {
@@ -339,7 +641,7 @@ export default function App() {
         ::-webkit-scrollbar{width:4px}
         ::-webkit-scrollbar-track{background:#060d1a}
         ::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:2px}
-        input:focus{border-color:#2a5a8a !important}
+        input:focus,textarea:focus{border-color:#2a5a8a !important}
       `}</style>
       <div style={{ position:"fixed", inset:0, pointerEvents:"none", zIndex:0, background:"repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,20,50,0.025) 2px,rgba(0,20,50,0.025) 4px)" }}/>
       <div style={{ position:"relative", zIndex:1, maxWidth:960, margin:"0 auto", padding:"24px 20px" }}>
@@ -363,13 +665,20 @@ export default function App() {
               <div style={{ fontSize:12, color:"#3a6a8a", fontFamily:"'DM Mono',monospace" }}>{fmtTime(lastUpdate)}</div>
             </div>
           </div>
-          <StatusBanner cwsStatus={cwsStatus} engState={engState} eta={eta}/>
+          <StatusBanner cwsStatus={cwsStatus} engState={engState} eta={eta} situationFlag={situationFlag}/>
         </div>
 
         {/* Sensor cards */}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))", gap:14, marginBottom:22 }}>
-          {visibleSensors.map(s => <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}/>)}
+          {visibleSensors.map(s => (
+            <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}
+              uptime={s.id==="CHW-S" ? uptime : null}
+              onAnalyze={() => setShowAnalysis(true)}/>
+          ))}
         </div>
+
+        {/* History chart */}
+        <HistoryChart window={histWindow} setWindow={setHistWindow}/>
 
         {/* Differential */}
         <div style={{ marginBottom:22 }}>
@@ -424,15 +733,28 @@ export default function App() {
         </div>
       )}
 
+      {/* Outage analysis modal */}
+      {showAnalysis && (
+        <OutageAnalysisModal
+          onClose={() => setShowAnalysis(false)}
+          currentReading={readings["CHW-S"]}
+          cwsStatus={cwsStatus}
+        />
+      )}
+
       {adminOpen && (
         <AdminPanel
-          ambientTemp={ambientTemp} setAmbientTemp={setAmbientTemp}
-          matchDelta={matchDelta}   setMatchDelta={setMatchDelta}
-          engState={engState}       setEngState={setEngState}
-          eta={eta}                 setEta={setEta}
-          showHot={showHot}         setShowHot={setShowHot}
+          ambientTemp={ambientTemp}           setAmbientTemp={setAmbientTemp}
+          matchDelta={matchDelta}             setMatchDelta={setMatchDelta}
+          engState={engState}                 setEngState={setEngState}
+          eta={eta}                           setEta={setEta}
+          situationFlag={situationFlag}       setSituationFlag={setSituationFlag}
+          showHot={showHot}                   setShowHot={setShowHot}
+          alertRecipients={alertRecipients}   setAlertRecipients={setAlertRecipients}
+          sendRecoveryEmails={sendRecoveryEmails} setSendRecoveryEmails={setSendRecoveryEmails}
+          warnCooldownHours={warnCooldownHours}   setWarnCooldownHours={setWarnCooldownHours}
           onClose={() => setAdminOpen(false)}
-          onSave={saveSettings}     saving={saving}
+          onSave={saveSettings}               saving={saving}
         />
       )}
     </div>
