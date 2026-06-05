@@ -329,19 +329,14 @@ Please provide:
 5. A brief recommendation for building engineering
 
 Be specific with dates and temperatures. Write in plain English suitable for both engineers and HOA board members.`;
-
-        const response = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 1000,
-            messages: [{ role: "user", content: prompt }],
-          }),
-        });
-        const data = await response.json();
-        const text = data.content?.find(b => b.type === "text")?.text || "Analysis unavailable.";
-        setAnalysis(text);
+const response = await fetch("/api/analyze", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ summary, cwsStatus, currentReading }),
+});
+const data = await response.json();
+setAnalysis(data.analysis);
+ 
       } catch (err) {
         setAnalysis("Failed to generate analysis. Please try again.");
       }
