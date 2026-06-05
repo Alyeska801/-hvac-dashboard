@@ -10,7 +10,7 @@
 //   2. Add a .env.local file with your Upstash credentials (see below)
 //   3. Run: node import-history.mjs
 
-import { createClient } from "@upstash/redis";
+import { Redis } from "@upstash/redis";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -27,10 +27,8 @@ if (fs.existsSync(envPath)) {
 }
 
 const SENSOR_FILES = {
-  "CHW-S": "d88b4c01000c37d0-20260604202332.csv",
-  "CHW-R": "d88b4c01000c37f8-20260604202545.csv",
-  "HHW-S": "d88b4c01000c381e-20260604202641.csv",
-  "HHW-R": "d88b4c01000c381a-20260604202716.csv",
+  "CHW-S": "d88b4c01000c37d0-20260605000542.csv",
+  "CHW-R": "d88b4c01000c37f8-20260605000625.csv",
 };
 
 const BUCKET_MS = 5 * 60 * 1000; // 5-minute buckets
@@ -87,10 +85,10 @@ async function main() {
     process.exit(1);
   }
 
-  const redis = createClient({
-    url: process.env.KV_REST_API_URL,
-    token: process.env.KV_REST_API_TOKEN,
-  });
+  const redis = new Redis({
+  url: process.env.KV_REST_API_URL,
+  token: process.env.KV_REST_API_TOKEN,
+});
 
   console.log("🚀 Starting historical import...\n");
 
