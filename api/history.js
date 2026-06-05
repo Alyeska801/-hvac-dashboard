@@ -1,6 +1,7 @@
 import { Redis } from "@upstash/redis";
 
 const redis = Redis.fromEnv();
+const BUCKET_MS = 5 * 60 * 1000;
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -18,79 +19,79 @@ export default async function handler(req, res) {
   const now = Date.now();
   const since = now - windowMs;
 
+  // Downsample factor — how many 5-min buckets to merge into one point
+  const downsampleFactor = {
+    "24h": 1,   // every 5 min = 288 points
+    "1m":  12,  // every hour = 720 points
+    "3m":  12,  // every hour = ~2160 points
+    "6m":  24,  // every 2 hours = ~2160 points
+  }[window] || 1;
+
+  const bucketSize = BUCKET_MS * downsampleFactor;
+
   try {
-    // Scan for all reading keys in the time window
-    // Keys are stored as "reading:{timestamp}"
-    const BUCKET_MS = 5 * 60 * 1000;
+    // Build the list of expected bucket timestamps directly
+    // Much faster than scanning — O(n) where n = number of expected points
+    const startBucket = Math.floor(since / BUCKET_MS) * BUCKET_MS;
+    const endBucket   = Math.floor(now  / BUCKET_MS) * BUCKET_MS;
 
-    // For longer windows, downsample to hourly averages to keep response small
-    const targetPoints = window === "24h" ? 288 : 720;
-    const bucketSize = window === "24h" ? BUCKET_MS : Math.ceil(windowMs / targetPoints);
-
-    // Scan keys
-    let cursor = 0;
-    const keys = [];
-    do {
-      const [nextCursor, batch] = await redis.scan(cursor, {
-        match: "reading:*",
-        count: 200,
-      });
-      cursor = parseInt(nextCursor);
-      for (const key of batch) {
-        const ts = parseInt(key.split(":")[1]);
-        if (ts >= since && ts <= now) keys.push({ key, ts });
-      }
-    } while (cursor !== 0);
-
-    if (!keys.length) return res.status(200).json({ points: [], window });
-
-    // Sort by time
-    keys.sort((a, b) => a.ts - b.ts);
-
-    // Fetch all values in batches
-    const pipeline = redis.pipeline();
-    for (const { key } of keys) pipeline.hgetall(key);
-    const results = await pipeline.exec();
-
-    // Build raw points
-    const raw = [];
-    keys.forEach(({ ts }, i) => {
-      const data = results[i];
-      if (!data) return;
-      raw.push({
-        ts,
-        "CHW-S": data["CHW-S"] != null ? parseFloat(data["CHW-S"]) : null,
-        "CHW-R": data["CHW-R"] != null ? parseFloat(data["CHW-R"]) : null,
-      });
-    });
-
-    // Downsample into buckets
-    const buckets = new Map();
-    for (const point of raw) {
-      const bucket = Math.floor(point.ts / bucketSize) * bucketSize;
-      if (!buckets.has(bucket)) buckets.set(bucket, { "CHW-S": [], "CHW-R": [] });
-      if (point["CHW-S"] != null) buckets.get(bucket)["CHW-S"].push(point["CHW-S"]);
-      if (point["CHW-R"] != null) buckets.get(bucket)["CHW-R"].push(point["CHW-R"]);
+    // Collect all 5-min bucket timestamps in range
+    const allBuckets = [];
+    for (let t = startBucket; t <= endBucket; t += BUCKET_MS) {
+      allBuckets.push(t);
     }
 
-    const points = [];
-    for (const [bucket, vals] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
-      const avg = arr => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null;
-      points.push({
+    // Fetch in batches of 100 to avoid hitting pipeline limits
+    const BATCH = 100;
+    const rawMap = new Map();
+
+    for (let i = 0; i < allBuckets.length; i += BATCH) {
+      const batch = allBuckets.slice(i, i + BATCH);
+      const pipeline = redis.pipeline();
+      for (const ts of batch) pipeline.hgetall(`reading:${ts}`);
+      const results = await pipeline.exec();
+      batch.forEach((ts, j) => {
+        const data = results[j];
+        if (data && (data["CHW-S"] != null || data["CHW-R"] != null)) {
+          rawMap.set(ts, {
+            "CHW-S": data["CHW-S"] != null ? parseFloat(data["CHW-S"]) : null,
+            "CHW-R": data["CHW-R"] != null ? parseFloat(data["CHW-R"]) : null,
+          });
+        }
+      });
+    }
+
+    // Downsample into display buckets
+    const displayBuckets = new Map();
+    for (const [ts, vals] of rawMap) {
+      const bucket = Math.floor(ts / bucketSize) * bucketSize;
+      if (!displayBuckets.has(bucket)) displayBuckets.set(bucket, { "CHW-S": [], "CHW-R": [] });
+      if (vals["CHW-S"] != null) displayBuckets.get(bucket)["CHW-S"].push(vals["CHW-S"]);
+      if (vals["CHW-R"] != null) displayBuckets.get(bucket)["CHW-R"].push(vals["CHW-R"]);
+    }
+
+    const avg = arr => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null;
+
+    const points = [...displayBuckets.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([bucket, vals]) => ({
         ts: bucket,
         "CHW-S": avg(vals["CHW-S"]),
         "CHW-R": avg(vals["CHW-R"]),
-      });
-    }
+      }))
+      .filter(p => p["CHW-S"] != null || p["CHW-R"] != null);
 
-    // Compute uptime stats for CHW-S (last 7 days)
+    // Uptime stats for CHW-S over last 7 days
     const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
-    const uptimePoints = points.filter(p => p.ts >= sevenDaysAgo);
+    const uptimeRaw = [...rawMap.entries()]
+      .filter(([ts]) => ts >= sevenDaysAgo)
+      .sort((a, b) => a[0] - b[0]);
+
     let nominal = 0, degraded = 0, offline = 0;
-    for (const p of uptimePoints) {
-      if (p["CHW-S"] == null) continue;
-      if (p["CHW-S"] >= 65) offline++;
-      else if (p["CHW-S"] >= 57) degraded++;
+    for (const [, vals] of uptimeRaw) {
+      if (vals["CHW-S"] == null) continue;
+      if (vals["CHW-S"] >= 65) offline++;
+      else if (vals["CHW-S"] >= 57) degraded++;
       else nominal++;
     }
     const total = nominal + degraded + offline || 1;
@@ -98,11 +99,11 @@ export default async function handler(req, res) {
       nominal:  +(nominal  / total * 100).toFixed(1),
       degraded: +(degraded / total * 100).toFixed(1),
       offline:  +(offline  / total * 100).toFixed(1),
-      segments: uptimePoints.map(p => ({
-        ts: p.ts,
-        status: p["CHW-S"] == null ? "unknown"
-              : p["CHW-S"] >= 65 ? "offline"
-              : p["CHW-S"] >= 57 ? "degraded"
+      segments: uptimeRaw.map(([ts, vals]) => ({
+        ts,
+        status: vals["CHW-S"] == null ? "unknown"
+              : vals["CHW-S"] >= 65 ? "offline"
+              : vals["CHW-S"] >= 57 ? "degraded"
               : "nominal",
       })),
     };
