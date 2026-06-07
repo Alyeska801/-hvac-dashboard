@@ -1,22 +1,15 @@
-// ─── Historical CSV Importer ───────────────────────────────────────────────
+// ─── Historical CSV Importer (updated June 7) ─────────────────────────────
 // Run once from your hvac-dashboard folder:
 //   node import-history.mjs
 //
-// Reads all four sensor CSVs, downsamples to 5-minute buckets,
-// and bulk-loads into Upstash Redis.
-//
-// Prerequisites:
-//   1. Copy your four CSV files into the hvac-dashboard folder
-//   2. Add a .env.local file with your Upstash credentials (see below)
-//   3. Run: node import-history.mjs
+// Imports CWS, CHW-R, and Ambient data into Upstash.
+// Ambient is stored separately for the outage analysis visual.
 
 import { Redis } from "@upstash/redis";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// ─── Config ───────────────────────────────────────────────────────────────
-// Load env from .env.local (Vercel's local env file)
 const envPath = path.join(path.dirname(fileURLToPath(import.meta.url)), ".env.local");
 if (fs.existsSync(envPath)) {
   const lines = fs.readFileSync(envPath, "utf8").split("\n");
@@ -26,21 +19,22 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+// Update these filenames to match your downloaded CSVs
 const SENSOR_FILES = {
-  "CHW-S": "d88b4c01000c37d0-20260605000542.csv",
-  "CHW-R": "d88b4c01000c37f8-20260605000625.csv",
+  "CHW-S":   "d88b4c01000c37d0-20260607205202.csv",
+  "CHW-R":   "d88b4c01000c37f8-20260607210120.csv",
+  "AMBIENT": "d88b4c01000c37d0-20260607211328.csv",
 };
 
-const BUCKET_MS = 5 * 60 * 1000; // 5-minute buckets
-const TTL_SECONDS = 60 * 60 * 24 * 190; // 190 days
+const BUCKET_MS   = 5 * 60 * 1000;
+const TTL_SECONDS = 60 * 60 * 24 * 190;
 
-// ─── Parse CSV ────────────────────────────────────────────────────────────
-function parseCSV(filePath) {
+function parseCSV(filePath, isAmbient = false) {
   if (!fs.existsSync(filePath)) {
     console.warn(`  ⚠ File not found: ${filePath} — skipping`);
     return [];
   }
-  const lines = fs.readFileSync(filePath, "utf8").split("\n").slice(1); // skip header
+  const lines = fs.readFileSync(filePath, "utf8").split("\n").slice(1);
   const points = [];
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -48,78 +42,107 @@ function parseCSV(filePath) {
     if (parts.length < 3) continue;
     const timeStr = parts[1].trim();
     const tempStr = parts[2].trim().replace("℉", "");
-    const temp = parseFloat(tempStr);
+    const temp    = parseFloat(tempStr);
     if (isNaN(temp)) continue;
-    // Parse "2026/04/07 13:16:00-0600"
-    const normalized = timeStr
-      .replace("/", "-").replace("/", "-") // 2026-04-07 13:16:00-0600
-      .replace(" ", "T");                  // 2026-04-07T13:16:00-0600
+    const normalized = timeStr.replace("/", "-").replace("/", "-").replace(" ", "T");
     const ts = new Date(normalized).getTime();
     if (isNaN(ts)) continue;
-    points.push({ ts, temp });
+    const point = { ts, temp };
+    // Also capture humidity for ambient
+    if (isAmbient && parts[3]) {
+      const hum = parseFloat(parts[3].trim().replace("%RH",""));
+      if (!isNaN(hum)) point.humidity = hum;
+    }
+    points.push(point);
   }
   return points;
 }
 
-// ─── Downsample to 5-minute buckets (average) ────────────────────────────
-function downsample(points) {
+function downsample(points, bucketMs) {
   const buckets = new Map();
-  for (const { ts, temp } of points) {
-    const bucket = Math.floor(ts / BUCKET_MS) * BUCKET_MS;
-    if (!buckets.has(bucket)) buckets.set(bucket, []);
-    buckets.get(bucket).push(temp);
+  for (const p of points) {
+    const bucket = Math.floor(p.ts / bucketMs) * bucketMs;
+    if (!buckets.has(bucket)) buckets.set(bucket, { temps: [], humidities: [] });
+    buckets.get(bucket).temps.push(p.temp);
+    if (p.humidity != null) buckets.get(bucket).humidities.push(p.humidity);
   }
-  const result = [];
-  for (const [bucket, temps] of buckets) {
-    const avg = +(temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1);
-    result.push({ ts: bucket, temp: avg });
-  }
-  return result.sort((a, b) => a.ts - b.ts);
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([ts, { temps, humidities }]) => ({
+      ts,
+      temp: +(temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1),
+      ...(humidities.length ? { humidity: +(humidities.reduce((a,b)=>a+b,0)/humidities.length).toFixed(1) } : {}),
+    }));
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────
 async function main() {
   if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
     console.error("❌ Missing KV_REST_API_URL or KV_REST_API_TOKEN in .env.local");
-    console.error("   Get these from your Vercel project → Environment Variables");
     process.exit(1);
   }
 
   const redis = new Redis({
-  url: process.env.KV_REST_API_URL,
-  token: process.env.KV_REST_API_TOKEN,
-});
+    url: process.env.KV_REST_API_URL,
+    token: process.env.KV_REST_API_TOKEN,
+  });
 
   console.log("🚀 Starting historical import...\n");
 
-  for (const [sensorId, filename] of Object.entries(SENSOR_FILES)) {
-    console.log(`📊 Processing ${sensorId} (${filename})...`);
+  // ── CHW-S and CHW-R into reading buckets ──────────────────────────────────
+  const allBuckets = new Map();
+  for (const [sensorId, filename] of [["CHW-S", SENSOR_FILES["CHW-S"]], ["CHW-R", SENSOR_FILES["CHW-R"]]]) {
+    console.log(`📊 Parsing ${sensorId} (${filename})...`);
     const raw = parseCSV(filename);
     if (!raw.length) continue;
-    const samples = downsample(raw);
+    const samples = downsample(raw, BUCKET_MS);
     console.log(`   ${raw.length} raw → ${samples.length} 5-min buckets`);
+    for (const { ts, temp } of samples) {
+      if (!allBuckets.has(ts)) allBuckets.set(ts, {});
+      allBuckets.get(ts)[sensorId] = temp;
+    }
+  }
 
-    // Write in batches of 100 to avoid rate limits
-    let written = 0;
-    for (let i = 0; i < samples.length; i += 100) {
-      const batch = samples.slice(i, i + 100);
+  const bucketList = [...allBuckets.entries()].sort((a, b) => a[0] - b[0]);
+  console.log(`\n💾 Writing ${bucketList.length} CHW buckets to Upstash...`);
+  let written = 0;
+  for (let i = 0; i < bucketList.length; i += 50) {
+    const batch = bucketList.slice(i, i + 50);
+    const pipeline = redis.pipeline();
+    for (const [ts, data] of batch) {
+      pipeline.hset(`reading:${ts}`, data);
+      pipeline.expire(`reading:${ts}`, TTL_SECONDS);
+    }
+    await pipeline.exec();
+    written += batch.length;
+    process.stdout.write(`\r   Written: ${written}/${bucketList.length}`);
+  }
+  console.log("\n   ✓ Done\n");
+
+  // ── Ambient into separate keys ────────────────────────────────────────────
+  console.log(`🌡  Parsing AMBIENT (${SENSOR_FILES["AMBIENT"]})...`);
+  const ambientRaw = parseCSV(SENSOR_FILES["AMBIENT"], true);
+  if (ambientRaw.length) {
+    const ambientSamples = downsample(ambientRaw, BUCKET_MS);
+    console.log(`   ${ambientRaw.length} raw → ${ambientSamples.length} 5-min buckets`);
+    let ambWritten = 0;
+    for (let i = 0; i < ambientSamples.length; i += 50) {
+      const batch = ambientSamples.slice(i, i + 50);
       const pipeline = redis.pipeline();
-      for (const { ts, temp } of batch) {
-        const key = `reading:${ts}`;
-        // Each key holds readings for all sensors at that timestamp
-        // We merge with existing data if present
-        pipeline.hset(key, { [sensorId]: temp });
-        pipeline.expire(key, TTL_SECONDS);
+      for (const { ts, temp, humidity } of batch) {
+        const data = { temp };
+        if (humidity != null) data.humidity = humidity;
+        pipeline.hset(`ambient:${ts}`, data);
+        pipeline.expire(`ambient:${ts}`, TTL_SECONDS);
       }
       await pipeline.exec();
-      written += batch.length;
-      process.stdout.write(`\r   Written: ${written}/${samples.length}`);
+      ambWritten += batch.length;
+      process.stdout.write(`\r   Written: ${ambWritten}/${ambientSamples.length}`);
     }
-    console.log(`\n   ✓ Done\n`);
+    console.log("\n   ✓ Done\n");
   }
 
   console.log("✅ Import complete!");
-  console.log("   Your historical data is now in Upstash and will appear in the dashboard charts.");
+  console.log("   All historical data is now in Upstash.");
 }
 
 main().catch(err => {
