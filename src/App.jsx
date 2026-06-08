@@ -104,50 +104,7 @@ function Gauge({ value, min, max, color, status }) {
 
 function UptimeBar({ uptime }) {
   if (!uptime) return null;
-  const {nominal,degraded,offline,segments}=uptime;
-  const sc={nominal:"#4CAF50",degraded:"#FFA726",offline:"#EF5350",unknown:"#2a3a4a"};
-
-  // Build contiguous filled blocks based on time position
-  // Fill gaps with the previous known status (carry-forward interpolation)
-  let blocks = [];
-  if (segments && segments.length > 1) {
-    const tMin = segments[0].ts;
-    const tMax = segments[segments.length-1].ts;
-    const tRange = tMax - tMin || 1;
-
-    // Carry-forward: fill each gap with the last known status
-    let filled = [];
-    for (let i = 0; i < segments.length; i++) {
-      const curr = segments[i];
-      const next = segments[i+1];
-      filled.push({ ts: curr.ts, status: curr.status });
-      if (next) {
-        const gapMs = next.ts - curr.ts;
-        const bucketMs = 5 * 60 * 1000;
-        // Fill gaps longer than one bucket with carry-forward status
-        if (gapMs > bucketMs * 1.5) {
-          for (let t = curr.ts + bucketMs; t < next.ts; t += bucketMs) {
-            filled.push({ ts: t, status: curr.status });
-          }
-        }
-      }
-    }
-
-    // Merge consecutive same-status into blocks
-    let i = 0;
-    while (i < filled.length) {
-      const status = filled[i].status;
-      let j = i + 1;
-      while (j < filled.length && filled[j].status === status) j++;
-      const startPct = (filled[i].ts - tMin) / tRange * 100;
-      const endPct   = j < filled.length
-        ? (filled[j].ts - tMin) / tRange * 100
-        : 100;
-      blocks.push({ status, startPct, widthPct: endPct - startPct });
-      i = j;
-    }
-  }
-
+  const {nominal,degraded,offline}=uptime;
   return (
     <div style={{marginTop:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
@@ -158,17 +115,14 @@ function UptimeBar({ uptime }) {
           ))}
         </div>
       </div>
-      <svg width="100%" height="8" style={{display:"block",borderRadius:4,overflow:"hidden"}}>
-        <rect x="0" y="0" width="100%" height="8" fill="#1a2535"/>
-        {blocks.map((b,i)=>(
-          <rect key={i}
-            x={`${b.startPct}%`} y="0"
-            width={`${Math.max(b.widthPct, 0.1)}%`} height="8"
-            fill={sc[b.status]||"#2a3a4a"} opacity="0.88"
-            rx="0"
-          />
+      <div style={{height:8,borderRadius:4,overflow:"hidden",display:"flex",background:"#1a2535"}}>
+        {[["nominal",nominal,"#4CAF50"],["degraded",degraded,"#FFA726"],["offline",offline,"#EF5350"]]
+          .filter(([,p])=>p>0)
+          .map(([key,p,color])=>(
+            <div key={key} style={{width:`${p}%`,background:color,opacity:0.88}}
+              title={`${key.toUpperCase()} ${p}%`}/>
         ))}
-      </svg>
+      </div>
       <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}>
         <span style={{fontSize:8,color:"#1e3a55",fontFamily:"'DM Mono',monospace"}}>7 days ago</span>
         <span style={{fontSize:8,color:"#1e3a55",fontFamily:"'DM Mono',monospace"}}>now</span>
