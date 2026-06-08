@@ -7,54 +7,56 @@ const SENSORS = [
   { id: "HHW-S", label: "Hot Water",     role: "Supply", color: "#FF8A65", pipe: "hot"  },
   { id: "HHW-R", label: "Hot Water",     role: "Return", color: "#FFAB91", pipe: "hot"  },
 ];
-const THRESHOLDS = {
-  "CHW-S": { warn: 57, crit: 65 }, "CHW-R": { warn: 68, crit: 75 },
-  "HHW-S": { warn: 148, crit: 155 }, "HHW-R": { warn: 128, crit: 135 },
-};
 const GAUGE_RANGES = {
   "CHW-S": [44, 75], "CHW-R": [54, 82], "HHW-S": [128, 162], "HHW-R": [108, 142],
 };
-const AMBIENT_MATCH_DELTA = 8;
 const ADMIN_PASSWORD = "towers";
 const OWNER_PASSWORD = "alyeska";
+const DEFAULT_DEGRADED = 57;
+const DEFAULT_OFFLINE  = 65;
+const AMBIENT_MATCH_DELTA = 8;
 
-function getCWSStatus(cwsTemp, ambientTemp, matchDelta = AMBIENT_MATCH_DELTA) {
+function getCWSStatus(cwsTemp, ambientTemp, matchDelta, offlineT, degradedT) {
   if (cwsTemp == null) return "nominal";
   if (ambientTemp !== null && cwsTemp >= ambientTemp - matchDelta) return "offline";
-  if (cwsTemp >= 65) return "offline";
-  if (cwsTemp >= 57) return "degraded";
+  if (cwsTemp >= offlineT)  return "offline";
+  if (cwsTemp >= degradedT) return "degraded";
   return "nominal";
 }
+function getSensorStatus(id, val, degradedT = DEFAULT_DEGRADED, offlineT = DEFAULT_OFFLINE) {
+  if (val == null) return "normal";
+  if (id === "CHW-S") return val >= offlineT ? "critical" : val >= degradedT ? "warning" : "normal";
+  const t = { "CHW-R": {w:68,c:75}, "HHW-S": {w:148,c:155}, "HHW-R": {w:128,c:135} }[id];
+  if (!t) return "normal";
+  return val >= t.c ? "critical" : val >= t.w ? "warning" : "normal";
+}
+
 const STATUS_META = {
-  nominal:  { color: "#4CAF50", bg: "#0d2218", border: "#4CAF5040", label: "NOMINAL",  baseMsg: null },
-  degraded: { color: "#FFA726", bg: "#261a04", border: "#FFA72640", label: "DEGRADED", baseMsg: "You may notice cooling takes longer than usual." },
-  offline:  { color: "#EF5350", bg: "#220808", border: "#EF535040", label: "OFFLINE",  baseMsg: "Chilled water is not circulating in the building." },
+  nominal:  { color:"#4CAF50", bg:"#0d2218", border:"#4CAF5040", label:"NOMINAL",  baseMsg:null },
+  degraded: { color:"#FFA726", bg:"#261a04", border:"#FFA72640", label:"DEGRADED", baseMsg:"You may notice cooling takes longer than usual." },
+  offline:  { color:"#EF5350", bg:"#220808", border:"#EF535040", label:"OFFLINE",  baseMsg:"Chilled water is not circulating in the building." },
 };
 const ENG_STATES = {
-  none:        { label: "No override" },
-  aware:       { label: "We're aware", suffix: "Building engineering is aware and investigating." },
-  maintenance: { label: "Offline for service" },
+  none:        { suffix: null },
+  aware:       { suffix: "Building engineering is aware and investigating." },
+  maintenance: { suffix: null },
 };
 
-function getSensorStatus(id, val) {
-  const t = THRESHOLDS[id]; if (!t || val == null) return "normal";
-  return val >= t.crit ? "critical" : val >= t.warn ? "warning" : "normal";
-}
-function fmtTime(d)  { return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
-function fmtDate(d)  { return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }); }
-function fmtShort(ts){ return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" }); }
-function fmtChartTime(ts, window) {
+function fmtTime(d)  { return d.toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
+function fmtDate(d)  { return d.toLocaleDateString("en-US", {weekday:"short",month:"short",day:"numeric"}); }
+function fmtShort(ts){ return new Date(ts).toLocaleDateString("en-US", {month:"short",day:"numeric"}); }
+function fmtChartTime(ts, w) {
   const d = new Date(ts);
-  if (window === "24h") return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return w === "24h"
+    ? d.toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit"})
+    : d.toLocaleDateString("en-US", {month:"short",day:"numeric"});
 }
 
-// ─── Sparkline ────────────────────────────────────────────────────────────────
-function Sparkline({ data, color, width = 210, height = 34 }) {
-  if (!data || data.length < 2) return null;
-  const vals = data.map(d => d.value);
-  const mn = Math.min(...vals)-1, mx = Math.max(...vals)+1, rng = mx-mn||1;
-  const pts = vals.map((v,i)=>`${(i/(vals.length-1))*width},${height-((v-mn)/rng)*height}`);
+function Sparkline({ data, color, width=210, height=34 }) {
+  if (!data||data.length<2) return null;
+  const vals=data.map(d=>d.value);
+  const mn=Math.min(...vals)-1, mx=Math.max(...vals)+1, rng=mx-mn||1;
+  const pts=vals.map((v,i)=>`${(i/(vals.length-1))*width},${height-((v-mn)/rng)*height}`);
   return (
     <svg width={width} height={height} style={{overflow:"visible",display:"block"}}>
       <defs><linearGradient id={`sg${color.slice(1)}`} x1="0" y1="0" x2="0" y2="1">
@@ -67,10 +69,9 @@ function Sparkline({ data, color, width = 210, height = 34 }) {
   );
 }
 
-// ─── Gauge ────────────────────────────────────────────────────────────────────
 function Gauge({ value, min, max, color, status }) {
-  const pct = Math.max(0, Math.min(1, ((value??min)-min)/(max-min)));
-  const nc = {normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status]||"#ccc";
+  const pct=Math.max(0,Math.min(1,((value??min)-min)/(max-min)));
+  const nc={normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status]||"#ccc";
   return (
     <svg width="90" height="62" viewBox="0 0 90 62">
       <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke="#1a2535" strokeWidth="7" strokeLinecap="round"/>
@@ -84,11 +85,10 @@ function Gauge({ value, min, max, color, status }) {
   );
 }
 
-// ─── Uptime Bar ───────────────────────────────────────────────────────────────
 function UptimeBar({ uptime }) {
   if (!uptime) return null;
-  const { nominal, degraded, offline, segments } = uptime;
-  const sc = { nominal:"#4CAF50", degraded:"#FFA726", offline:"#EF5350", unknown:"#1e2d45" };
+  const {nominal,degraded,offline,segments}=uptime;
+  const sc={nominal:"#4CAF50",degraded:"#FFA726",offline:"#EF5350",unknown:"#1e2d45"};
   return (
     <div style={{marginTop:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
@@ -113,17 +113,13 @@ function UptimeBar({ uptime }) {
   );
 }
 
-// ─── Sensor Card ──────────────────────────────────────────────────────────────
-function SensorCard({ sensor, reading, history, uptime, cwsStatus, onViewHistory, onAnalyze }) {
-  const status = getSensorStatus(sensor.id, reading);
-  const sdot = {normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status];
-  const sbg  = {normal:"#1b3a2a",warning:"#3a2a0a",critical:"#3a0a0a"}[status];
-  const slbl = {normal:"NOMINAL",warning:"ELEVATED",critical:"ALERT"}[status];
-  const [gMin,gMax] = GAUGE_RANGES[sensor.id];
-  const isCWS = sensor.id === "CHW-S";
-  const isOffline = cwsStatus === "offline";
-  const isDegraded = cwsStatus === "degraded";
-
+function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, offlineT, onViewHistory, onAnalyze }) {
+  const status=getSensorStatus(sensor.id,reading,degradedT,offlineT);
+  const sdot={normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status];
+  const sbg ={normal:"#1b3a2a",warning:"#3a2a0a",critical:"#3a0a0a"}[status];
+  const slbl={normal:"NOMINAL",warning:"ELEVATED",critical:"ALERT"}[status];
+  const [gMin,gMax]=GAUGE_RANGES[sensor.id];
+  const isCWS=sensor.id==="CHW-S";
   return (
     <div style={{background:"linear-gradient(135deg,#0d1b2e 0%,#0a1525 100%)",border:"1px solid #1e2d45",borderRadius:12,padding:"18px 18px 14px",position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:12,right:12,background:sbg,border:`1px solid ${sdot}40`,borderRadius:20,padding:"3px 10px",display:"flex",alignItems:"center",gap:5}}>
@@ -144,30 +140,22 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, onViewHistory
       <div style={{marginTop:10}}>
         {history&&history.length>=2
           ? <Sparkline data={history} color={sensor.color}/>
-          : <div style={{height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#1e3a55",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>COLLECTING DATA...</div>
-        }
+          : <div style={{height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#1e3a55",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>COLLECTING DATA...</div>}
       </div>
-      {isCWS && <UptimeBar uptime={uptime}/>}
-      {isCWS && (
+      {isCWS&&<UptimeBar uptime={uptime}/>}
+      {isCWS&&(
         <div style={{display:"flex",gap:8,marginTop:10}}>
-          <button onClick={onViewHistory} style={{
-            flex:1,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,
-            color:"#4a7fa5",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",
-            cursor:"pointer",letterSpacing:1,transition:"all 0.2s",
-          }}
+          <button onClick={onViewHistory} style={{flex:1,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#4a7fa5",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,transition:"all 0.2s"}}
             onMouseEnter={e=>{e.target.style.borderColor="#4a7fa5";e.target.style.color="#81b4d4";}}
-            onMouseLeave={e=>{e.target.style.borderColor="#1e3a55";e.target.style.color="#4a7fa5";}}
-          >📊 OUTAGE HISTORY</button>
-          {(isOffline||isDegraded) && (
-            <button onClick={onAnalyze} style={{
-              flex:1,background:"#220808",border:"1px solid #EF535088",borderRadius:6,
-              color:"#EF5350",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",
-              cursor:"pointer",letterSpacing:1,transition:"all 0.2s",
-              animation:"pulse 2s infinite",
-            }}
-              onMouseEnter={e=>{e.target.style.background="#3a0a0a";}}
-              onMouseLeave={e=>{e.target.style.background="#220808";}}
-            >🔴 OUTAGE ANALYSIS</button>
+            onMouseLeave={e=>{e.target.style.borderColor="#1e3a55";e.target.style.color="#4a7fa5";}}>
+            📊 OUTAGE HISTORY
+          </button>
+          {(cwsStatus==="offline"||cwsStatus==="degraded")&&(
+            <button onClick={onAnalyze} style={{flex:1,background:"#220808",border:"1px solid #EF535088",borderRadius:6,color:"#EF5350",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,animation:"pulse 2s infinite"}}
+              onMouseEnter={e=>e.target.style.background="#3a0a0a"}
+              onMouseLeave={e=>e.target.style.background="#220808"}>
+              🔴 OUTAGE ANALYSIS
+            </button>
           )}
         </div>
       )}
@@ -175,182 +163,10 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, onViewHistory
   );
 }
 
-// ─── Outage History Modal ─────────────────────────────────────────────────────
-function OutageHistoryModal({ onClose }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch("/api/outages")
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
-
-  const severityColor = (peak) => peak >= 73 ? "#EF5350" : peak >= 69 ? "#FF7043" : "#FFA726";
-
-  return (
-    <div onClick={e=>{if(e.target===e.currentTarget)onClose();}}
-      style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,5,15,0.85)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-      <div style={{background:"#07111f",border:"1px solid #2a4a6a",borderRadius:14,padding:"24px 28px",width:"100%",maxWidth:720,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 12px 50px #000e",fontFamily:"'DM Mono',monospace"}}>
-
-        {/* Header */}
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,paddingBottom:14,borderBottom:"1px solid #1a2d45"}}>
-          <div>
-            <div style={{fontSize:14,color:"#e8f4fd",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:1}}>CHILLER OUTAGE HISTORY</div>
-            <div style={{fontSize:10,color:"#3a6a8a",letterSpacing:1,marginTop:2}}>AMERICAN TOWERS · SALT LAKE CITY</div>
-          </div>
-          <button onClick={onClose} style={{background:"none",border:"none",color:"#3a6a8a",cursor:"pointer",fontSize:18,padding:0}}>✕</button>
-        </div>
-
-        {loading ? (
-          <div style={{padding:"40px 0",textAlign:"center",color:"#3a6a8a",fontSize:11,letterSpacing:2}}>LOADING OUTAGE DATA...</div>
-        ) : !data?.outages?.length ? (
-          <div style={{padding:"40px 0",textAlign:"center",color:"#3a6a8a",fontSize:11}}>No outage events found in historical data.</div>
-        ) : (
-          <>
-            {/* Summary stats */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:24}}>
-              {[
-                ["TOTAL OUTAGES", data.stats.totalOutages, "#EF5350"],
-                ["TOTAL OFFLINE", `${data.stats.offlineHrs}h`, "#FFA726"],
-                ["UPTIME (6MO)", `${data.stats.uptimePct}%`, "#4CAF50"],
-              ].map(([label, value, color]) => (
-                <div key={label} style={{background:"#0a1525",border:"1px solid #1e2d45",borderRadius:8,padding:"12px",textAlign:"center"}}>
-                  <div style={{fontSize:9,color:"#3a6a8a",letterSpacing:1,marginBottom:6}}>{label}</div>
-                  <div style={{fontSize:26,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",color}}>{value}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Timeline bars */}
-            <div style={{marginBottom:20}}>
-              <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>EVENT TIMELINE</div>
-              {data.outages.map((o, i) => {
-                const color = severityColor(o.peakTemp);
-                const widthPct = Math.min(100, Math.max(2, (o.durationHrs / 30) * 100));
-                return (
-                  <div key={i} style={{marginBottom:10}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        {o.ongoing && <div style={{width:6,height:6,borderRadius:"50%",background:"#EF5350",boxShadow:"0 0 6px #EF5350",animation:"pulse 1.2s infinite"}}/>}
-                        <span style={{fontSize:11,color:"#c8dff0"}}>
-                          {fmtShort(o.start)} {new Date(o.start).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}
-                          {o.end ? ` → ${fmtShort(o.end)} ${new Date(o.end).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : " → ONGOING"}
-                        </span>
-                      </div>
-                      <div style={{display:"flex",gap:16,fontSize:10}}>
-                        <span style={{color}}>{o.durationHrs}h</span>
-                        <span style={{color}}>peak {o.peakTemp}°F</span>
-                        {o.ambientDelta!=null && <span style={{color:"#4a7fa5"}}>+{o.ambientDelta}° above ambient</span>}
-                      </div>
-                    </div>
-                    {/* Duration bar */}
-                    <div style={{height:6,background:"#0a1525",borderRadius:3,overflow:"hidden"}}>
-                      <div style={{height:"100%",width:`${widthPct}%`,background:color,borderRadius:3,opacity:0.8}}/>
-                    </div>
-                  </div>
-                );
-              })}
-              <div style={{fontSize:9,color:"#1e3a55",marginTop:8}}>Bar width proportional to duration (max 30h scale)</div>
-            </div>
-
-            {/* Peak temp chart */}
-            <div>
-              <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>PEAK TEMPERATURE BY EVENT</div>
-              <ResponsiveContainer width="100%" height={140}>
-                <LineChart data={data.outages.map((o,i)=>({name:fmtShort(o.start),peak:o.peakTemp,ambient:o.ambientAvg,index:i+1}))}
-                  margin={{top:5,right:10,left:0,bottom:5}}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2d45"/>
-                  <XAxis dataKey="name" tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={{stroke:"#1e2d45"}}/>
-                  <YAxis tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={false} domain={[50,80]} tickFormatter={v=>`${v}°`} width={32}/>
-                  <Tooltip contentStyle={{background:"#07111f",border:"1px solid #1e3a55",borderRadius:8,fontFamily:"'DM Mono',monospace",fontSize:11}}
-                    formatter={(v,n)=>[`${v}°F`, n==="peak"?"Peak CWS":"Avg Ambient"]}/>
-                  <ReferenceLine y={65} stroke="#EF5350" strokeDasharray="4 4" strokeOpacity={0.5}/>
-                  <Line type="monotone" dataKey="peak" stroke="#EF5350" strokeWidth={2} dot={{fill:"#EF5350",r:4}} name="peak"/>
-                  <Line type="monotone" dataKey="ambient" stroke="#4a7fa5" strokeWidth={1.5} dot={{fill:"#4a7fa5",r:3}} strokeDasharray="4 4" name="ambient"/>
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Outage Analysis Modal (AI, only when degraded/offline) ──────────────────
-function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
-  const [analysis, setAnalysis] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    async function run() {
-      try {
-        const [histRes, outageRes] = await Promise.all([
-          fetch("/api/history?window=6m"),
-          fetch("/api/outages"),
-        ]);
-        const [histData, outageData] = await Promise.all([histRes.json(), outageRes.json()]);
-
-        const recentPoints = (histData?.points || [])
-          .slice(-72)
-          .map(p => `${new Date(p.ts).toISOString().slice(11,16)} ${p["CHW-S"]}°F`)
-          .join("\n");
-
-        const outagesSummary = (outageData?.outages || [])
-          .map(o => `${new Date(o.start).toLocaleDateString("en-US",{month:"short",day:"numeric"})} — ${o.durationHrs}h, peak ${o.peakTemp}°F${o.ambientDelta!=null?`, +${o.ambientDelta}° above ambient`:""}`)
-          .join("\n");
-
-        const response = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            summary: `CURRENT STATUS: ${cwsStatus.toUpperCase()} at ${currentReading}°F\n\nRECENT TREND (last 6 hours):\n${recentPoints}\n\nPAST OUTAGE EVENTS:\n${outagesSummary}`,
-            cwsStatus,
-            currentReading,
-            mode: "current",
-          }),
-        });
-        const data = await response.json();
-        setAnalysis(data.analysis);
-      } catch {
-        setAnalysis("Failed to generate analysis. Please try again.");
-      }
-      setLoading(false);
-    }
-    run();
-  }, []);
-
-  return (
-    <div onClick={e=>{if(e.target===e.currentTarget)onClose();}}
-      style={{position:"fixed",inset:0,zIndex:300,background:"rgba(20,0,0,0.88)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-      <div style={{background:"#0f0505",border:"1px solid #EF535044",borderRadius:14,padding:"24px 28px",width:"100%",maxWidth:640,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 12px 50px #000e",fontFamily:"'DM Mono',monospace"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,paddingBottom:14,borderBottom:"1px solid #2a0a0a"}}>
-          <div>
-            <div style={{fontSize:14,color:"#ef9a9a",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:1}}>🔴 ACTIVE OUTAGE ANALYSIS</div>
-            <div style={{fontSize:10,color:"#6a2a2a",letterSpacing:1,marginTop:2}}>AI-POWERED · CURRENT SITUATION VS HISTORICAL PATTERNS</div>
-          </div>
-          <button onClick={onClose} style={{background:"none",border:"none",color:"#6a2a2a",cursor:"pointer",fontSize:18,padding:0}}>✕</button>
-        </div>
-        {loading ? (
-          <div style={{padding:"40px 0",textAlign:"center"}}>
-            <div style={{fontSize:11,color:"#6a2a2a",letterSpacing:2,marginBottom:8}}>ANALYZING CURRENT SITUATION...</div>
-            <div style={{fontSize:10,color:"#3a1010"}}>Comparing to historical outage signatures</div>
-          </div>
-        ) : (
-          <div style={{fontSize:13,color:"#f5c6c6",lineHeight:1.8,whiteSpace:"pre-wrap"}}>{analysis}</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Delta Badge ──────────────────────────────────────────────────────────────
 function DeltaBadge({ label, a, b, colorA, colorB }) {
   if (a==null||b==null) return null;
-  const delta = +(b-a).toFixed(1);
-  const dc = delta>15?"#EF5350":delta>8?"#FFA726":"#4CAF50";
+  const delta=+(b-a).toFixed(1);
+  const dc=delta>15?"#EF5350":delta>8?"#FFA726":"#4CAF50";
   return (
     <div style={{background:"#0a1525",border:"1px solid #1e2d45",borderRadius:8,padding:"12px 14px",textAlign:"center"}}>
       <div style={{fontSize:9,color:"#3a6a8a",fontFamily:"'DM Mono',monospace",letterSpacing:1,marginBottom:6}}>{label}</div>
@@ -364,11 +180,10 @@ function DeltaBadge({ label, a, b, colorA, colorB }) {
   );
 }
 
-// ─── Status Banner ────────────────────────────────────────────────────────────
 function StatusBanner({ cwsStatus, engState, eta, situationFlag }) {
-  const meta = STATUS_META[cwsStatus];
+  const meta=STATUS_META[cwsStatus];
   if (cwsStatus==="nominal"&&engState==="none"&&!situationFlag) return null;
-  let msg = meta.baseMsg||"";
+  let msg=meta.baseMsg||"";
   if (engState==="aware") msg=[msg,ENG_STATES.aware.suffix].filter(Boolean).join(" ");
   else if (engState==="maintenance") {
     const etaPart=eta?`Estimated return to service: ${eta}.`:"Return to service time is being determined.";
@@ -384,17 +199,16 @@ function StatusBanner({ cwsStatus, engState, eta, situationFlag }) {
   );
 }
 
-// ─── History Chart (CWS only) ─────────────────────────────────────────────────
-function HistoryChart({ window, setWindow }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
+function HistoryChart({ window, setWindow, degradedT, offlineT }) {
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
     setLoading(true);
     fetch(`/api/history?window=${window}`).then(r=>r.json()).then(d=>{setData(d);setLoading(false);}).catch(()=>setLoading(false));
-  }, [window]);
-  const windows = ["24h","1m","3m","6m"];
-  const windowLabels = {"24h":"24 Hours","1m":"1 Month","3m":"3 Months","6m":"6 Months"};
-  const CustomTooltip = ({active,payload,label}) => {
+  },[window]);
+  const windows=["24h","1m","3m","6m"];
+  const windowLabels={"24h":"24 Hours","1m":"1 Month","3m":"3 Months","6m":"6 Months"};
+  const CustomTooltip=({active,payload,label})=>{
     if(!active||!payload?.length) return null;
     return (
       <div style={{background:"#07111f",border:"1px solid #1e3a55",borderRadius:8,padding:"10px 14px",fontFamily:"'DM Mono',monospace"}}>
@@ -409,31 +223,23 @@ function HistoryChart({ window, setWindow }) {
         <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:3}}>CHILLED WATER SUPPLY HISTORY</div>
         <div style={{display:"flex",gap:6}}>
           {windows.map(w=>(
-            <button key={w} onClick={()=>setWindow(w)} style={{
-              background:window===w?"#1a3a5a":"transparent",border:`1px solid ${window===w?"#2a5a8a":"#1e2d45"}`,
-              borderRadius:6,color:window===w?"#81b4d4":"#3a6a8a",padding:"4px 10px",
-              fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,
-            }}>{windowLabels[w]}</button>
+            <button key={w} onClick={()=>setWindow(w)} style={{background:window===w?"#1a3a5a":"transparent",border:`1px solid ${window===w?"#2a5a8a":"#1e2d45"}`,borderRadius:6,color:window===w?"#81b4d4":"#3a6a8a",padding:"4px 10px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1}}>{windowLabels[w]}</button>
           ))}
         </div>
       </div>
-      {loading ? (
+      {loading?(
         <div style={{height:200,display:"flex",alignItems:"center",justifyContent:"center",color:"#2a4a6a",fontFamily:"'DM Mono',monospace",fontSize:11}}>LOADING DATA...</div>
-      ) : !data?.points?.length ? (
+      ):!data?.points?.length?(
         <div style={{height:200,display:"flex",alignItems:"center",justifyContent:"center",color:"#2a4a6a",fontFamily:"'DM Mono',monospace",fontSize:11}}>NO DATA FOR THIS WINDOW YET</div>
-      ) : (
+      ):(
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={data.points} margin={{top:5,right:10,left:0,bottom:5}}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e2d45"/>
-            <XAxis dataKey="ts" tickFormatter={ts=>fmtChartTime(ts,window)}
-              tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}}
-              tickLine={false} axisLine={{stroke:"#1e2d45"}} interval="preserveStartEnd"/>
-            <YAxis tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}}
-              tickLine={false} axisLine={false} domain={["auto","auto"]} tickFormatter={v=>`${v}°`} width={35}/>
+            <XAxis dataKey="ts" tickFormatter={ts=>fmtChartTime(ts,window)} tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={{stroke:"#1e2d45"}} interval="preserveStartEnd"/>
+            <YAxis tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={false} domain={["auto","auto"]} tickFormatter={v=>`${v}°`} width={35}/>
             <Tooltip content={<CustomTooltip/>}/>
-            <ReferenceLine y={57} stroke="#FFA726" strokeDasharray="4 4" strokeOpacity={0.5} label={{value:"DEGRADED",fill:"#FFA726",fontSize:8,fontFamily:"'DM Mono',monospace"}}/>
-            <ReferenceLine y={65} stroke="#EF5350" strokeDasharray="4 4" strokeOpacity={0.5} label={{value:"OFFLINE",fill:"#EF5350",fontSize:8,fontFamily:"'DM Mono',monospace"}}/>
-            {/* CWS only — CHW-R removed from history chart */}
+            <ReferenceLine y={degradedT} stroke="#FFA726" strokeDasharray="4 4" strokeOpacity={0.5} label={{value:"DEGRADED",fill:"#FFA726",fontSize:8,fontFamily:"'DM Mono',monospace"}}/>
+            <ReferenceLine y={offlineT}  stroke="#EF5350" strokeDasharray="4 4" strokeOpacity={0.5} label={{value:"OFFLINE", fill:"#EF5350",fontSize:8,fontFamily:"'DM Mono',monospace"}}/>
             <Line type="monotone" dataKey="CHW-S" name="CW Supply" stroke="#4FC3F7" strokeWidth={1.5} dot={false} connectNulls/>
           </LineChart>
         </ResponsiveContainer>
@@ -442,7 +248,130 @@ function HistoryChart({ window, setWindow }) {
   );
 }
 
-// ─── Toggle ───────────────────────────────────────────────────────────────────
+function OutageHistoryModal({ onClose, degradedT, offlineT }) {
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    fetch("/api/outages").then(r=>r.json()).then(d=>{setData(d);setLoading(false);}).catch(()=>setLoading(false));
+  },[]);
+  const severityColor=peak=>peak>=73?"#EF5350":peak>=69?"#FF7043":"#FFA726";
+  return (
+    <div onClick={e=>{if(e.target===e.currentTarget)onClose();}}
+      style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,5,15,0.85)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"#07111f",border:"1px solid #2a4a6a",borderRadius:14,padding:"24px 28px",width:"100%",maxWidth:720,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 12px 50px #000e",fontFamily:"'DM Mono',monospace"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,paddingBottom:14,borderBottom:"1px solid #1a2d45"}}>
+          <div>
+            <div style={{fontSize:14,color:"#e8f4fd",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:1}}>CHILLER OUTAGE HISTORY</div>
+            <div style={{fontSize:10,color:"#3a6a8a",letterSpacing:1,marginTop:2}}>AMERICAN TOWERS · SALT LAKE CITY</div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#3a6a8a",cursor:"pointer",fontSize:18,padding:0}}>✕</button>
+        </div>
+        {loading?(
+          <div style={{padding:"40px 0",textAlign:"center",color:"#3a6a8a",fontSize:11,letterSpacing:2}}>LOADING OUTAGE DATA...</div>
+        ):!data?.outages?.length?(
+          <div style={{padding:"40px 0",textAlign:"center",color:"#3a6a8a",fontSize:11}}>No outage events found.</div>
+        ):(
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:24}}>
+              {[["TOTAL OUTAGES",data.stats.totalOutages,"#EF5350"],["TOTAL OFFLINE",`${data.stats.offlineHrs}h`,"#FFA726"],["UPTIME (6MO)",`${data.stats.uptimePct}%`,"#4CAF50"]].map(([label,value,color])=>(
+                <div key={label} style={{background:"#0a1525",border:"1px solid #1e2d45",borderRadius:8,padding:"12px",textAlign:"center"}}>
+                  <div style={{fontSize:9,color:"#3a6a8a",letterSpacing:1,marginBottom:6}}>{label}</div>
+                  <div style={{fontSize:26,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",color}}>{value}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>EVENT TIMELINE</div>
+              {data.outages.map((o,i)=>{
+                const color=severityColor(o.peakTemp);
+                const widthPct=Math.min(100,Math.max(2,(o.durationHrs/30)*100));
+                return (
+                  <div key={i} style={{marginBottom:10}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        {o.ongoing&&<div style={{width:6,height:6,borderRadius:"50%",background:"#EF5350",boxShadow:"0 0 6px #EF5350",animation:"pulse 1.2s infinite"}}/>}
+                        <span style={{fontSize:11,color:"#c8dff0"}}>
+                          {fmtShort(o.start)} {new Date(o.start).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}
+                          {o.end?` → ${fmtShort(o.end)} ${new Date(o.end).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}`:" → ONGOING"}
+                        </span>
+                      </div>
+                      <div style={{display:"flex",gap:12,fontSize:10}}>
+                        <span style={{color}}>{o.durationHrs}h</span>
+                        <span style={{color}}>peak {o.peakTemp}°F</span>
+                        {o.ambientDelta!=null&&<span style={{color:"#4a7fa5"}}>+{o.ambientDelta}° above ambient</span>}
+                      </div>
+                    </div>
+                    <div style={{height:6,background:"#0a1525",borderRadius:3,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${widthPct}%`,background:color,borderRadius:3,opacity:0.8}}/>
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{fontSize:9,color:"#1e3a55",marginTop:8}}>Bar width proportional to duration (max 30h scale)</div>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>PEAK TEMPERATURE BY EVENT</div>
+              <ResponsiveContainer width="100%" height={140}>
+                <LineChart data={data.outages.map((o,i)=>({name:fmtShort(o.start),peak:o.peakTemp,ambient:o.ambientAvg,index:i+1}))} margin={{top:5,right:10,left:0,bottom:5}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2d45"/>
+                  <XAxis dataKey="name" tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={{stroke:"#1e2d45"}}/>
+                  <YAxis tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={false} domain={[50,80]} tickFormatter={v=>`${v}°`} width={32}/>
+                  <Tooltip contentStyle={{background:"#07111f",border:"1px solid #1e3a55",borderRadius:8,fontFamily:"'DM Mono',monospace",fontSize:11}} formatter={(v,n)=>[`${v}°F`,n==="peak"?"Peak CWS":"Avg Ambient"]}/>
+                  <ReferenceLine y={offlineT} stroke="#EF5350" strokeDasharray="4 4" strokeOpacity={0.5}/>
+                  <Line type="monotone" dataKey="peak" stroke="#EF5350" strokeWidth={2} dot={{fill:"#EF5350",r:4}} name="peak"/>
+                  <Line type="monotone" dataKey="ambient" stroke="#4a7fa5" strokeWidth={1.5} dot={{fill:"#4a7fa5",r:3}} strokeDasharray="4 4" name="ambient"/>
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
+  const [analysis,setAnalysis]=useState("");
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    async function run() {
+      try {
+        const [histRes,outageRes]=await Promise.all([fetch("/api/history?window=6m"),fetch("/api/outages")]);
+        const [histData,outageData]=await Promise.all([histRes.json(),outageRes.json()]);
+        const recentPoints=(histData?.points||[]).slice(-72).map(p=>`${new Date(p.ts).toISOString().slice(11,16)} ${p["CHW-S"]}°F`).join("\n");
+        const outagesSummary=(outageData?.outages||[]).map(o=>`${new Date(o.start).toLocaleDateString("en-US",{month:"short",day:"numeric"})} — ${o.durationHrs}h, peak ${o.peakTemp}°F${o.ambientDelta!=null?`, +${o.ambientDelta}° above ambient`:""}`).join("\n");
+        const response=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({summary:`CURRENT STATUS: ${cwsStatus.toUpperCase()} at ${currentReading}°F\n\nRECENT TREND (last 6 hours):\n${recentPoints}\n\nPAST OUTAGE EVENTS:\n${outagesSummary}`,cwsStatus,currentReading,mode:"current"})});
+        const data=await response.json();
+        setAnalysis(data.analysis);
+      } catch { setAnalysis("Failed to generate analysis. Please try again."); }
+      setLoading(false);
+    }
+    run();
+  },[]);
+  return (
+    <div onClick={e=>{if(e.target===e.currentTarget)onClose();}}
+      style={{position:"fixed",inset:0,zIndex:300,background:"rgba(20,0,0,0.88)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"#0f0505",border:"1px solid #EF535044",borderRadius:14,padding:"24px 28px",width:"100%",maxWidth:640,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 12px 50px #000e",fontFamily:"'DM Mono',monospace"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,paddingBottom:14,borderBottom:"1px solid #2a0a0a"}}>
+          <div>
+            <div style={{fontSize:14,color:"#ef9a9a",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:1}}>🔴 ACTIVE OUTAGE ANALYSIS</div>
+            <div style={{fontSize:10,color:"#6a2a2a",letterSpacing:1,marginTop:2}}>AI-POWERED · CURRENT SITUATION VS HISTORICAL PATTERNS</div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#6a2a2a",cursor:"pointer",fontSize:18,padding:0}}>✕</button>
+        </div>
+        {loading?(
+          <div style={{padding:"40px 0",textAlign:"center"}}>
+            <div style={{fontSize:11,color:"#6a2a2a",letterSpacing:2,marginBottom:8}}>ANALYZING CURRENT SITUATION...</div>
+            <div style={{fontSize:10,color:"#3a1010"}}>Comparing to historical outage signatures</div>
+          </div>
+        ):(
+          <div style={{fontSize:13,color:"#f5c6c6",lineHeight:1.8,whiteSpace:"pre-wrap"}}>{analysis}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Toggle({ on, onChange, label, sublabel, locked }) {
   return (
     <div onClick={()=>!locked&&onChange(!on)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:on?"#0d1e30":"#0a1220",border:`1px solid ${on?"#2a5a8a":"#1a2a3a"}`,borderRadius:8,padding:"10px 12px",cursor:locked?"default":"pointer",transition:"all 0.2s",opacity:locked?0.5:1}}>
@@ -457,12 +386,12 @@ function Toggle({ on, onChange, label, sublabel, locked }) {
   );
 }
 
-// ─── Admin Panel ──────────────────────────────────────────────────────────────
 function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
                       engState,setEngState,eta,setEta,situationFlag,setSituationFlag,
                       alertRecipients,setAlertRecipients,sendRecoveryEmails,setSendRecoveryEmails,
-                      warnCooldownHours,setWarnCooldownHours,showHot,setShowHot,
-                      onClose,onSave,saving }) {
+                      degradedThreshold,setDegradedThreshold,offlineThreshold,setOfflineThreshold,
+                      warnRateOfRise,setWarnRateOfRise,warnCooldownHours,setWarnCooldownHours,
+                      showHot,setShowHot,onClose,onSave,saving }) {
   const [ambDraft,setAmbDraft]=useState(ambientTemp??"");
   const [deltaDraft,setDeltaDraft]=useState(matchDelta);
   const [ownerUnlocked,setOwnerUnlocked]=useState(false);
@@ -471,12 +400,14 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
   const btnBase={flex:1,borderRadius:7,padding:"9px 8px",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:0.5,border:"1px solid",transition:"all 0.15s",textAlign:"center"};
   const activeBtn=c=>({...btnBase,background:`${c}22`,borderColor:`${c}88`,color:c});
   const inactiveBtn=()=>({...btnBase,background:"#0a1828",borderColor:"#1e3a55",color:"#3a6a8a"});
+
   return (
     <div style={{position:"fixed",bottom:24,right:24,zIndex:100,background:"#07111f",border:"1px solid #2a4a6a",borderRadius:14,padding:"20px 22px",width:320,boxShadow:"0 8px 40px #000c",fontFamily:"'DM Mono',monospace",maxHeight:"90vh",overflowY:"auto"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,paddingBottom:12,borderBottom:"1px solid #1a2d45"}}>
         <span style={{fontSize:10,color:"#4a7fa5",letterSpacing:2}}>⚙ ENGINEERING ADMIN</span>
         <button onClick={onClose} style={{background:"none",border:"none",color:"#3a6a8a",cursor:"pointer",fontSize:16,padding:0}}>✕</button>
       </div>
+
       {/* Sensor visibility — owner only */}
       <div style={{marginBottom:14}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -495,6 +426,7 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
         <Toggle on={showHot} onChange={setShowHot} locked={!ownerUnlocked} label="Hot water sensors (HWS / HWR)" sublabel="Hide when valves closed for service"/>
       </div>
       <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
+
       {/* Situation flag */}
       <div style={{marginBottom:14}}>
         <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>SITUATION NOTE (shown on dashboard)</div>
@@ -502,6 +434,7 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
           style={{width:"100%",background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 10px",fontSize:11,fontFamily:"'DM Mono',monospace",outline:"none",resize:"vertical"}}/>
       </div>
       <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
+
       {/* Banner override */}
       <div style={{marginBottom:14}}>
         <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:8}}>BANNER STATUS OVERRIDE</div>
@@ -519,6 +452,7 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
         )}
       </div>
       <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
+
       {/* Alert recipients */}
       <div style={{marginBottom:14}}>
         <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>ALERT RECIPIENTS (one per line)</div>
@@ -526,19 +460,55 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
           placeholder={"engineer@building.com\nmanager@building.com"} rows={4}
           style={{width:"100%",background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 10px",fontSize:11,fontFamily:"'DM Mono',monospace",outline:"none",resize:"vertical"}}/>
       </div>
-      {/* Notification settings */}
+      {/* Recovery emails toggle */}
       <div style={{marginBottom:14}}>
-        <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:8}}>NOTIFICATION SETTINGS</div>
         <Toggle on={sendRecoveryEmails} onChange={setSendRecoveryEmails} label="Send recovery emails" sublabel="Notify when system returns to nominal"/>
-        <div style={{marginTop:8,display:"flex",alignItems:"center",gap:8}}>
-          <div style={{fontSize:10,color:"#3a6080",flex:1}}>Warning cooldown (hours)</div>
-          <input type="number" value={warnCooldownHours} onChange={e=>setWarnCooldownHours(parseFloat(e.target.value)||4)}
-            style={{width:60,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:5,color:"#c8dff0",padding:"5px 8px",fontSize:12,fontFamily:"'DM Mono',monospace",outline:"none",textAlign:"center"}}/>
-        </div>
       </div>
-      {/* Ambient — owner only */}
+      <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
+
+      {/* Owner-only settings */}
       {ownerUnlocked&&<>
-        <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
+        {/* Thresholds */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:8}}>CWS TEMPERATURE THRESHOLDS (°F)</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {[["DEGRADED ≥",degradedThreshold,setDegradedThreshold],["OFFLINE ≥",offlineThreshold,setOfflineThreshold]].map(([label,val,setter])=>(
+              <div key={label}>
+                <div style={{fontSize:9,color:"#3a6080",letterSpacing:1,marginBottom:4}}>{label}</div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <input type="number" value={val} onChange={e=>setter(parseFloat(e.target.value)||57)}
+                    style={{flex:1,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 8px",fontSize:13,fontFamily:"'DM Mono',monospace",outline:"none",textAlign:"center"}}/>
+                  <span style={{fontSize:11,color:"#3a6a8a"}}>°F</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:6,fontSize:9,color:"#2a4050"}}>
+            nominal &lt;{degradedThreshold}°F · degraded {degradedThreshold}–{offlineThreshold}°F · offline ≥{offlineThreshold}°F
+          </div>
+        </div>
+
+        {/* Rate of rise + cooldown */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:8}}>ALERT THRESHOLDS</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div>
+              <div style={{fontSize:9,color:"#3a6080",letterSpacing:0.5,marginBottom:4}}>WARN RATE (°F/10min)</div>
+              <input type="number" value={warnRateOfRise} step="0.1" onChange={e=>setWarnRateOfRise(parseFloat(e.target.value)||0.5)}
+                style={{width:"100%",background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 8px",fontSize:13,fontFamily:"'DM Mono',monospace",outline:"none",textAlign:"center"}}/>
+            </div>
+            <div>
+              <div style={{fontSize:9,color:"#3a6080",letterSpacing:0.5,marginBottom:4}}>COOLDOWN (hours)</div>
+              <input type="number" value={warnCooldownHours} onChange={e=>setWarnCooldownHours(parseFloat(e.target.value)||1)}
+                style={{width:"100%",background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 8px",fontSize:13,fontFamily:"'DM Mono',monospace",outline:"none",textAlign:"center"}}/>
+            </div>
+          </div>
+          <div style={{marginTop:6,fontSize:9,color:"#2a4050"}}>
+            Warning fires at ≥{warnRateOfRise}°F/10min · {warnCooldownHours}h between warnings
+          </div>
+        </div>
+
+        {/* Ambient */}
         <div style={{marginBottom:12}}>
           <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>AMBIENT TEMPERATURE (°F)</div>
           <div style={{display:"flex",gap:8}}>
@@ -562,6 +532,7 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
           <div style={{marginTop:5,fontSize:10,color:"#2a4050"}}>Offline when CWS ≥ ambient − {matchDelta}°F</div>
         </div>
       </>}
+
       <button onClick={onSave} disabled={saving} style={{width:"100%",background:saving?"#0a1828":"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:8,color:saving?"#3a6a8a":"#81b4d4",padding:"10px",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:saving?"default":"pointer",letterSpacing:1}}>
         {saving?"SAVING...":"💾 SAVE SETTINGS FOR ALL VIEWERS"}
       </button>
@@ -569,7 +540,6 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
   );
 }
 
-// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [readings,     setReadings]     = useState({});
   const [histories,    setHistories]    = useState(()=>Object.fromEntries(SENSORS.map(s=>[s.id,[]])));
@@ -588,6 +558,9 @@ export default function App() {
   const [showHot,            setShowHot]             = useState(true);
   const [alertRecipients,    setAlertRecipients]     = useState([]);
   const [sendRecoveryEmails, setSendRecoveryEmails]  = useState(true);
+  const [degradedThreshold,  setDegradedThreshold]   = useState(DEFAULT_DEGRADED);
+  const [offlineThreshold,   setOfflineThreshold]    = useState(DEFAULT_OFFLINE);
+  const [warnRateOfRise,     setWarnRateOfRise]      = useState(1.0);
   const [warnCooldownHours,  setWarnCooldownHours]   = useState(4);
   const [adminOpen,          setAdminOpen]           = useState(false);
   const [pwModal,            setPwModal]             = useState(false);
@@ -597,23 +570,26 @@ export default function App() {
 
   useEffect(()=>{
     fetch("/api/settings").then(r=>r.json()).then(s=>{
-      if(s.showHot!==undefined)            setShowHot(s.showHot);
-      if(s.engState)                       setEngState(s.engState);
-      if(s.eta!==undefined)                setEta(s.eta);
-      if(s.situationFlag!==undefined)      setSituationFlag(s.situationFlag);
-      if(s.alertRecipients)                setAlertRecipients(s.alertRecipients);
-      if(s.sendRecoveryEmails!==undefined) setSendRecoveryEmails(s.sendRecoveryEmails);
+      if(s.showHot!==undefined)             setShowHot(s.showHot);
+      if(s.engState)                        setEngState(s.engState);
+      if(s.eta!==undefined)                 setEta(s.eta);
+      if(s.situationFlag!==undefined)       setSituationFlag(s.situationFlag);
+      if(s.alertRecipients)                 setAlertRecipients(s.alertRecipients);
+      if(s.sendRecoveryEmails!==undefined)  setSendRecoveryEmails(s.sendRecoveryEmails);
+      if(s.degradedThreshold)              setDegradedThreshold(s.degradedThreshold);
+      if(s.offlineThreshold)               setOfflineThreshold(s.offlineThreshold);
+      if(s.warnRateOfRise)                 setWarnRateOfRise(s.warnRateOfRise);
       if(s.warnCooldownHours)              setWarnCooldownHours(s.warnCooldownHours);
     }).catch(console.error);
-    fetch("/api/history?window=24h").then(r=>r.json()).then(d=>{
-      if(d.uptime) setUptime(d.uptime);
-    }).catch(console.error);
+    fetch("/api/history?window=24h").then(r=>r.json()).then(d=>{if(d.uptime)setUptime(d.uptime);}).catch(console.error);
   },[]);
 
   async function saveSettings() {
     setSaving(true);
     try {
-      await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({showHot,engState,eta,situationFlag,alertRecipients,sendRecoveryEmails,warnCooldownHours})});
+      await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({showHot,engState,eta,situationFlag,alertRecipients,sendRecoveryEmails,
+          degradedThreshold,offlineThreshold,warnRateOfRise,warnCooldownHours})});
     } catch(err){console.error(err);}
     setSaving(false);
   }
@@ -649,13 +625,9 @@ export default function App() {
     }catch(err){console.error(err);}
   },[]);
 
-  useEffect(()=>{
-    refresh();
-    const id=setInterval(refresh,600000);
-    return()=>clearInterval(id);
-  },[refresh]);
+  useEffect(()=>{refresh();const id=setInterval(refresh,600000);return()=>clearInterval(id);},[refresh]);
 
-  const cwsStatus  = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta);
+  const cwsStatus  = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold);
   const systemMeta = STATUS_META[cwsStatus];
   const visibleSensors = SENSORS.filter(s=>showHot||s.pipe!=="hot");
 
@@ -673,7 +645,6 @@ export default function App() {
       <div style={{position:"fixed",inset:0,pointerEvents:"none",zIndex:0,background:"repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,20,50,0.025) 2px,rgba(0,20,50,0.025) 4px)"}}/>
       <div style={{position:"relative",zIndex:1,maxWidth:960,margin:"0 auto",padding:"24px 20px"}}>
 
-        {/* Header */}
         <div style={{marginBottom:24,borderBottom:"1px solid #1a2d45",paddingBottom:18}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
             <div>
@@ -695,19 +666,17 @@ export default function App() {
           <StatusBanner cwsStatus={cwsStatus} engState={engState} eta={eta} situationFlag={situationFlag}/>
         </div>
 
-        {/* Sensor cards */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:14,marginBottom:22}}>
           {visibleSensors.map(s=>(
             <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}
               uptime={s.id==="CHW-S"?uptime:null} cwsStatus={cwsStatus}
-              onViewHistory={()=>setShowHistory(true)}
-              onAnalyze={()=>setShowAnalysis(true)}/>
+              degradedT={degradedThreshold} offlineT={offlineThreshold}
+              onViewHistory={()=>setShowHistory(true)} onAnalyze={()=>setShowAnalysis(true)}/>
           ))}
         </div>
 
-        <HistoryChart window={histWindow} setWindow={setHistWindow}/>
+        <HistoryChart window={histWindow} setWindow={setHistWindow} degradedT={degradedThreshold} offlineT={offlineThreshold}/>
 
-        {/* Differential */}
         <div style={{marginBottom:22}}>
           <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:3,marginBottom:10}}>DIFFERENTIAL ANALYSIS</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(175px,1fr))",gap:10}}>
@@ -720,7 +689,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Footer */}
         <div style={{borderTop:"1px solid #1a2d45",paddingTop:14,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <div style={{fontSize:9,color:"#1e3a55",letterSpacing:1}}>DATA SOURCE: YOLINK · CRON COLLECTION · DISPLAY REFRESH 10MIN</div>
@@ -734,7 +702,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Password modal */}
       {pwModal&&(
         <div onClick={e=>{if(e.target===e.currentTarget){setPwModal(false);setPwDraft("");setPwError(false);}}}
           style={{position:"fixed",inset:0,zIndex:200,background:"rgba(0,5,15,0.75)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -743,23 +710,19 @@ export default function App() {
               <div style={{fontSize:28,marginBottom:8}}>🔒</div>
               <div style={{fontSize:11,color:"#4a7fa5",letterSpacing:2}}>ENGINEERING ACCESS</div>
             </div>
-            <input autoFocus type="password" value={pwDraft}
-              onChange={e=>{setPwDraft(e.target.value);setPwError(false);}}
-              onKeyDown={e=>e.key==="Enter"&&attemptLogin()} placeholder="Password"
+            <input autoFocus type="password" value={pwDraft} onChange={e=>{setPwDraft(e.target.value);setPwError(false);}} onKeyDown={e=>e.key==="Enter"&&attemptLogin()} placeholder="Password"
               style={{width:"100%",background:"#0a1828",border:`1px solid ${pwError?"#EF5350":"#1e3a55"}`,borderRadius:7,color:"#c8dff0",padding:"10px 12px",fontSize:14,fontFamily:"'DM Mono',monospace",outline:"none",marginBottom:6,textAlign:"center",letterSpacing:3}}/>
             {pwError&&<div style={{fontSize:10,color:"#EF5350",textAlign:"center",marginBottom:8,letterSpacing:1}}>Incorrect password</div>}
             {!pwError&&<div style={{marginBottom:8}}/>}
             <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>{setPwModal(false);setPwDraft("");setPwError(false);}}
-                style={{flex:1,background:"transparent",border:"1px solid #1e3a55",borderRadius:7,color:"#3a6a8a",padding:"9px",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1}}>CANCEL</button>
-              <button onClick={attemptLogin}
-                style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:7,color:"#81b4d4",padding:"9px",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1}}>UNLOCK</button>
+              <button onClick={()=>{setPwModal(false);setPwDraft("");setPwError(false);}} style={{flex:1,background:"transparent",border:"1px solid #1e3a55",borderRadius:7,color:"#3a6a8a",padding:"9px",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1}}>CANCEL</button>
+              <button onClick={attemptLogin} style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:7,color:"#81b4d4",padding:"9px",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1}}>UNLOCK</button>
             </div>
           </div>
         </div>
       )}
 
-      {showHistory  && <OutageHistoryModal  onClose={()=>setShowHistory(false)}/>}
+      {showHistory  && <OutageHistoryModal  onClose={()=>setShowHistory(false)}  degradedT={degradedThreshold} offlineT={offlineThreshold}/>}
       {showAnalysis && <OutageAnalysisModal onClose={()=>setShowAnalysis(false)} currentReading={readings["CHW-S"]} cwsStatus={cwsStatus}/>}
 
       {adminOpen&&(
@@ -772,6 +735,9 @@ export default function App() {
           showHot={showHot}                     setShowHot={setShowHot}
           alertRecipients={alertRecipients}     setAlertRecipients={setAlertRecipients}
           sendRecoveryEmails={sendRecoveryEmails} setSendRecoveryEmails={setSendRecoveryEmails}
+          degradedThreshold={degradedThreshold} setDegradedThreshold={setDegradedThreshold}
+          offlineThreshold={offlineThreshold}   setOfflineThreshold={setOfflineThreshold}
+          warnRateOfRise={warnRateOfRise}       setWarnRateOfRise={setWarnRateOfRise}
           warnCooldownHours={warnCooldownHours} setWarnCooldownHours={setWarnCooldownHours}
           onClose={()=>setAdminOpen(false)}
           onSave={saveSettings}                 saving={saving}
