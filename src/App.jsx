@@ -47,16 +47,28 @@ function fmtDate(d)  { return d.toLocaleDateString("en-US", {weekday:"short",mon
 function fmtShort(ts){ return new Date(ts).toLocaleDateString("en-US", {month:"short",day:"numeric"}); }
 function fmtChartTime(ts, w) {
   const d = new Date(ts);
-  return w === "24h"
-    ? d.toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit"})
-    : d.toLocaleDateString("en-US", {month:"short",day:"numeric"});
+  if (w === "24h") return d.toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit"});
+  if (w === "1m")  return d.toLocaleDateString("en-US", {month:"short",day:"numeric"});
+  return d.toLocaleDateString("en-US", {month:"short",day:"numeric"});
+}
+function fmtChartTooltip(ts, w) {
+  const d = new Date(ts);
+  if (w === "24h") return d.toLocaleString("en-US", {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+  return d.toLocaleString("en-US", {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
 }
 
 function Sparkline({ data, color, width=210, height=34 }) {
   if (!data||data.length<2) return null;
   const vals=data.map(d=>d.value);
+  const times=data.map(d=>d.time);
   const mn=Math.min(...vals)-1, mx=Math.max(...vals)+1, rng=mx-mn||1;
   const pts=vals.map((v,i)=>`${(i/(vals.length-1))*width},${height-((v-mn)/rng)*height}`);
+  const coords=vals.map((v,i)=>({
+    x:(i/(vals.length-1))*width,
+    y:height-((v-mn)/rng)*height,
+    v,
+    t:times[i],
+  }));
   return (
     <svg width={width} height={height} style={{overflow:"visible",display:"block"}}>
       <defs><linearGradient id={`sg${color.slice(1)}`} x1="0" y1="0" x2="0" y2="1">
@@ -65,6 +77,11 @@ function Sparkline({ data, color, width=210, height=34 }) {
       </linearGradient></defs>
       <path d={`M${pts.join("L")}L${width},${height}L0,${height}Z`} fill={`url(#sg${color.slice(1)})`}/>
       <path d={`M${pts.join("L")}`} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+      {coords.map((c,i)=>(
+        <circle key={i} cx={c.x} cy={c.y} r={6} fill="transparent" style={{cursor:"crosshair"}}>
+          <title>{c.t ? new Date(c.t).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : ""} — {c.v}°F</title>
+        </circle>
+      ))}
     </svg>
   );
 }
@@ -212,7 +229,7 @@ function HistoryChart({ window, setWindow, degradedT, offlineT }) {
     if(!active||!payload?.length) return null;
     return (
       <div style={{background:"#07111f",border:"1px solid #1e3a55",borderRadius:8,padding:"10px 14px",fontFamily:"'DM Mono',monospace"}}>
-        <div style={{fontSize:10,color:"#3a6a8a",marginBottom:6}}>{fmtChartTime(label,window)}</div>
+        <div style={{fontSize:10,color:"#3a6a8a",marginBottom:6}}>{fmtChartTooltip(label,window)}</div>
         {payload.map(p=><div key={p.dataKey} style={{fontSize:12,color:p.color}}>{p.name}: {p.value}°F</div>)}
       </div>
     );
@@ -581,7 +598,7 @@ export default function App() {
       if(s.warnRateOfRise)                 setWarnRateOfRise(s.warnRateOfRise);
       if(s.warnCooldownHours)              setWarnCooldownHours(s.warnCooldownHours);
     }).catch(console.error);
-    fetch("/api/history?window=24h").then(r=>r.json()).then(d=>{if(d.uptime)setUptime(d.uptime);}).catch(console.error);
+    fetch("/api/history?window=6m").then(r=>r.json()).then(d=>{if(d.uptime)setUptime(d.uptime);}).catch(console.error);
   },[]);
 
   async function saveSettings() {
