@@ -9,16 +9,22 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET");
 
   try {
-    const now    = Date.now();
-    const since  = now - 180 * 24 * 60 * 60 * 1000; // 6 months back
+    const now   = Date.now();
+    const since = now - 180 * 24 * 60 * 60 * 1000; // 6 months
+
+    // Load thresholds from settings
+    const settings = await redis.get("hvac-settings") || {};
+    const offlineT  = settings.offlineThreshold  ?? 65;
+    const degradedT = settings.degradedThreshold ?? 57;
+
     const startB = Math.floor(since / BUCKET_MS) * BUCKET_MS;
     const endB   = Math.floor(now   / BUCKET_MS) * BUCKET_MS;
 
-    // Fetch CWS readings in batches
     const allBuckets = [];
     for (let t = startB; t <= endB; t += BUCKET_MS) allBuckets.push(t);
 
-    const BATCH = 100;
+    // Use large batches (500) to minimize round trips
+    const BATCH = 500;
     const cwsMap = new Map();
     const ambMap = new Map();
 
@@ -37,66 +43,64 @@ export default async function handler(req, res) {
       });
     }
 
-    // Build sorted time series
     const series = [...cwsMap.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([ts, cws]) => ({ ts, cws, ambient: ambMap.get(ts) ?? null }));
 
-    // Detect outage events
+    // Detect outage events using configurable thresholds
     const outages = [];
     let inOutage = false;
     let outageStart = null, outagePeak = 0, outageAmbient = [];
-    let prevNominalEnd = null;
 
     for (const { ts, cws, ambient } of series) {
-      if (cws >= 65 && !inOutage) {
+      if (cws >= offlineT && !inOutage) {
         inOutage = true;
         outageStart = ts;
         outagePeak = cws;
         outageAmbient = ambient != null ? [ambient] : [];
-      } else if (cws >= 65 && inOutage) {
+      } else if (cws >= offlineT && inOutage) {
         outagePeak = Math.max(outagePeak, cws);
         if (ambient != null) outageAmbient.push(ambient);
-      } else if (cws < 57 && inOutage) {
+      } else if (cws < degradedT && inOutage) {
         const avgAmbient = outageAmbient.length
           ? +(outageAmbient.reduce((a, b) => a + b, 0) / outageAmbient.length).toFixed(1)
           : null;
         outages.push({
-          start:       outageStart,
-          end:         ts,
-          durationHrs: +((ts - outageStart) / 3600000).toFixed(1),
-          peakTemp:    outagePeak,
-          ambientAvg:  avgAmbient,
+          start:        outageStart,
+          end:          ts,
+          durationHrs:  +((ts - outageStart) / 3600000).toFixed(1),
+          peakTemp:     outagePeak,
+          ambientAvg:   avgAmbient,
           ambientDelta: avgAmbient != null ? +(outagePeak - avgAmbient).toFixed(1) : null,
         });
-        prevNominalEnd = ts;
         inOutage = false;
         outageAmbient = [];
       }
     }
 
-    // If currently in outage
     if (inOutage) {
       const avgAmbient = outageAmbient.length
         ? +(outageAmbient.reduce((a, b) => a + b, 0) / outageAmbient.length).toFixed(1)
         : null;
       outages.push({
-        start:       outageStart,
-        end:         null,
-        durationHrs: +((now - outageStart) / 3600000).toFixed(1),
-        peakTemp:    outagePeak,
-        ambientAvg:  avgAmbient,
+        start:        outageStart,
+        end:          null,
+        durationHrs:  +((now - outageStart) / 3600000).toFixed(1),
+        peakTemp:     outagePeak,
+        ambientAvg:   avgAmbient,
         ambientDelta: avgAmbient != null ? +(outagePeak - avgAmbient).toFixed(1) : null,
-        ongoing:     true,
+        ongoing:      true,
       });
     }
 
-    // Compute overall stats
-    const totalHrs = (now - since) / 3600000;
-    const offlineHrs = outages.reduce((sum, o) => sum + (o.ongoing ? o.durationHrs : o.durationHrs), 0);
-    const uptimePct = +((1 - offlineHrs / totalHrs) * 100).toFixed(1);
+    const totalHrs  = (now - since) / 3600000;
+    const offlineHrs = outages.reduce((sum, o) => sum + o.durationHrs, 0);
+    const uptimePct  = +((1 - offlineHrs / totalHrs) * 100).toFixed(1);
 
-    res.status(200).json({ outages, stats: { totalOutages: outages.length, offlineHrs: +offlineHrs.toFixed(1), uptimePct } });
+    res.status(200).json({
+      outages,
+      stats: { totalOutages: outages.length, offlineHrs: +offlineHrs.toFixed(1), uptimePct },
+    });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
