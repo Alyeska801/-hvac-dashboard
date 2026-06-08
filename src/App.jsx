@@ -106,6 +106,19 @@ function UptimeBar({ uptime }) {
   if (!uptime) return null;
   const {nominal,degraded,offline,segments}=uptime;
   const sc={nominal:"#4CAF50",degraded:"#FFA726",offline:"#EF5350",unknown:"#1e2d45"};
+
+  // Build time-positioned stops for a smooth continuous bar with no gaps
+  let stops = [];
+  if (segments && segments.length > 1) {
+    const tMin = segments[0].ts;
+    const tMax = segments[segments.length-1].ts;
+    const tRange = tMax - tMin || 1;
+    stops = segments.map(seg => ({
+      pct: +((seg.ts - tMin) / tRange * 100).toFixed(2),
+      color: sc[seg.status] || "#1e2d45",
+    }));
+  }
+
   return (
     <div style={{marginTop:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
@@ -116,12 +129,26 @@ function UptimeBar({ uptime }) {
           ))}
         </div>
       </div>
-      <div style={{height:8,borderRadius:4,overflow:"hidden",display:"flex",background:"#1e2d45"}}>
-        {segments&&segments.map((seg,i)=>(
-          <div key={i} style={{flex:1,background:sc[seg.status],opacity:0.85}}
-            title={`${new Date(seg.ts).toLocaleString()} — ${seg.status.toUpperCase()}`}/>
-        ))}
-      </div>
+      {stops.length > 1 ? (
+        <svg width="100%" height="8" style={{display:"block"}}>
+          <defs>
+            <linearGradient id="uptime-grad" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">
+              {stops.map((s,i)=>(
+                <stop key={i} offset={`${s.pct}%`} stopColor={s.color} stopOpacity="0.9"/>
+              ))}
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width="100%" height="8" rx="4" fill="url(#uptime-grad)"/>
+        </svg>
+      ) : (
+        <div style={{height:8,borderRadius:4,overflow:"hidden",display:"flex",background:"#1e2d45"}}>
+          {[["nominal",nominal,"#4CAF50"],["degraded",degraded,"#FFA726"],["offline",offline,"#EF5350"]]
+            .filter(([,p])=>p>0)
+            .map(([key,p,color])=>(
+              <div key={key} style={{width:`${p}%`,background:color,opacity:0.85}}/>
+          ))}
+        </div>
+      )}
       <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}>
         <span style={{fontSize:8,color:"#1e3a55",fontFamily:"'DM Mono',monospace"}}>7 days ago</span>
         <span style={{fontSize:8,color:"#1e3a55",fontFamily:"'DM Mono',monospace"}}>now</span>
