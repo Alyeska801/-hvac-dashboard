@@ -127,6 +127,57 @@ export default async function handler(req, res) {
       readings, cwsStatus, ambientF, timestamp: new Date().toISOString(),
     }), { ex: 600 });
 
+    // Step 10b: Update outage cache incrementally
+    // This avoids expensive full scans in api/outages.js
+    try {
+      const cached = await redis.get("outages-cache") || { outages: [], lastUpdated: 0 };
+      let outages = cached.outages || [];
+      const last = outages[outages.length - 1];
+
+      if (cwsStatus === "offline") {
+        if (last && last.ongoing) {
+          // Extend current outage
+          last.durationHrs = +((now - last.start) / 3600000).toFixed(1);
+          last.peakTemp = Math.max(last.peakTemp, cwsTemp ?? 0);
+          if (ambientF != null) {
+            last._ambientSum = (last._ambientSum || 0) + ambientF;
+            last._ambientCount = (last._ambientCount || 0) + 1;
+            last.ambientAvg = +(last._ambientSum / last._ambientCount).toFixed(1);
+            last.ambientDelta = +(last.peakTemp - last.ambientAvg).toFixed(1);
+          }
+        } else {
+          // Start new outage
+          outages.push({
+            start: now, end: null, ongoing: true,
+            durationHrs: 0, peakTemp: cwsTemp ?? 0,
+            ambientAvg: ambientF, ambientDelta: null,
+            _ambientSum: ambientF ?? 0, _ambientCount: ambientF != null ? 1 : 0,
+          });
+        }
+      } else if (cwsStatus !== "offline" && last && last.ongoing) {
+        // Close outage
+        last.ongoing = false;
+        last.end = now;
+        last.durationHrs = +((now - last.start) / 3600000).toFixed(1);
+        // Clean up internal tracking fields
+        delete last._ambientSum;
+        delete last._ambientCount;
+      }
+
+      // Recompute stats
+      const totalHrs = (now - (now - 180 * 24 * 60 * 60 * 1000)) / 3600000;
+      const offlineHrs = outages.reduce((s, o) => s + o.durationHrs, 0);
+      const stats = {
+        totalOutages: outages.length,
+        offlineHrs: +offlineHrs.toFixed(1),
+        uptimePct: +((1 - offlineHrs / totalHrs) * 100).toFixed(1),
+      };
+
+      await redis.set("outages-cache", { outages, stats, lastUpdated: now }, { ex: TTL_SECONDS });
+    } catch (cacheErr) {
+      console.error("Outage cache error:", cacheErr);
+    }
+
     // Step 11: Alert logic using configurable thresholds
     try {
       if (recipients.length && cwsTemp != null) {
