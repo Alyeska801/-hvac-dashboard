@@ -181,10 +181,21 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
   );
 }
 
-function DeltaBadge({ label, a, b, colorA, colorB }) {
+function DeltaBadge({ label, a, b, colorA, colorB, cwsStatus, isCHW }) {
   if (a==null||b==null) return null;
   const delta=+(b-a).toFixed(1);
-  const dc=delta>15?"#EF5350":delta>8?"#FFA726":"#4CAF50";
+  let dc;
+  if (isCHW) {
+    // CHW Supply→Return: normal is 8-15°F (valve closed or actively cooling)
+    // Red only when both temps are high AND delta is small (chiller offline, equalizing)
+    const bothHigh = a >= 57 && b >= 57;
+    if (bothHigh && Math.abs(delta) < 5) dc = "#EF5350";      // offline + equalizing
+    else if (Math.abs(delta) < 5) dc = "#FFA726";              // transitional (valve just opened)
+    else if (Math.abs(delta) > 18) dc = "#FFA726";             // unusually large
+    else dc = "#4CAF50";                                         // normal 5-18°F range
+  } else {
+    dc=delta>15?"#EF5350":delta>8?"#FFA726":"#4CAF50";
+  }
   return (
     <div style={{background:"#0a1525",border:"1px solid #1e2d45",borderRadius:8,padding:"12px 14px",textAlign:"center"}}>
       <div style={{fontSize:9,color:"#3a6a8a",fontFamily:"'DM Mono',monospace",letterSpacing:1,marginBottom:6}}>{label}</div>
@@ -224,8 +235,8 @@ function HistoryChart({ window, setWindow, degradedT, offlineT }) {
     setLoading(true);
     fetch(`/api/history?window=${window}`).then(r=>r.json()).then(d=>{setData(d);setLoading(false);}).catch(()=>setLoading(false));
   },[window]);
-  const windows=["24h","1m","3m","6m"];
-  const windowLabels={"24h":"24 Hours","1m":"1 Month","3m":"3 Months","6m":"6 Months"};
+  const windows=["24h","7d","1m","3m","6m"];
+  const windowLabels={"24h":"24 Hours","7d":"7 Days","1m":"1 Month","3m":"3 Months","6m":"6 Months"};
   const CustomTooltip=({active,payload,label})=>{
     if(!active||!payload?.length) return null;
     return (
@@ -273,6 +284,8 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
     fetch("/api/outages").then(r=>r.json()).then(d=>{setData(d);setLoading(false);}).catch(()=>setLoading(false));
   },[]);
   const severityColor=peak=>peak>=73?"#EF5350":peak>=69?"#FF7043":"#FFA726";
+  // Most recent first
+  const outages = data?.outages ? [...data.outages].reverse() : [];
   return (
     <div onClick={e=>{if(e.target===e.currentTarget)onClose();}}
       style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,5,15,0.85)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
@@ -280,13 +293,13 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,paddingBottom:14,borderBottom:"1px solid #1a2d45"}}>
           <div>
             <div style={{fontSize:14,color:"#e8f4fd",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:1}}>CHILLER OUTAGE HISTORY</div>
-            <div style={{fontSize:10,color:"#3a6a8a",letterSpacing:1,marginTop:2}}>AMERICAN TOWERS · SALT LAKE CITY</div>
+            <div style={{fontSize:10,color:"#3a6a8a",letterSpacing:1,marginTop:2}}>AMERICAN TOWERS · SALT LAKE CITY · MOST RECENT FIRST</div>
           </div>
           <button onClick={onClose} style={{background:"none",border:"none",color:"#3a6a8a",cursor:"pointer",fontSize:18,padding:0}}>✕</button>
         </div>
         {loading?(
           <div style={{padding:"40px 0",textAlign:"center",color:"#3a6a8a",fontSize:11,letterSpacing:2}}>LOADING OUTAGE DATA...</div>
-        ):!data?.outages?.length?(
+        ):!outages.length?(
           <div style={{padding:"40px 0",textAlign:"center",color:"#3a6a8a",fontSize:11}}>No outage events found.</div>
         ):(
           <>
@@ -300,7 +313,7 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
             </div>
             <div style={{marginBottom:20}}>
               <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>EVENT TIMELINE</div>
-              {data.outages.map((o,i)=>{
+              {outages.map((o,i)=>{
                 const color=severityColor(o.peakTemp);
                 const widthPct=Math.min(100,Math.max(2,(o.durationHrs/30)*100));
                 return (
@@ -328,9 +341,9 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
               <div style={{fontSize:9,color:"#1e3a55",marginTop:8}}>Bar width proportional to duration (max 30h scale)</div>
             </div>
             <div>
-              <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>PEAK TEMPERATURE BY EVENT</div>
+              <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:2,marginBottom:12}}>PEAK TEMPERATURE BY EVENT (CHRONOLOGICAL)</div>
               <ResponsiveContainer width="100%" height={140}>
-                <LineChart data={data.outages.map((o,i)=>({name:fmtShort(o.start),peak:o.peakTemp,ambient:o.ambientAvg,index:i+1}))} margin={{top:5,right:10,left:0,bottom:5}}>
+                <LineChart data={[...data.outages].map((o,i)=>({name:fmtShort(o.start),peak:o.peakTemp,ambient:o.ambientAvg,index:i+1}))} margin={{top:5,right:10,left:0,bottom:5}}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e2d45"/>
                   <XAxis dataKey="name" tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={{stroke:"#1e2d45"}}/>
                   <YAxis tick={{fill:"#3a6a8a",fontSize:9,fontFamily:"'DM Mono',monospace"}} tickLine={false} axisLine={false} domain={[50,80]} tickFormatter={v=>`${v}°`} width={32}/>
@@ -350,26 +363,72 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
 
 function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
   const [analysis,setAnalysis]=useState("");
+  const [outages,setOutages]=useState([]);
   const [loading,setLoading]=useState(true);
+  const severityColor=peak=>peak>=73?"#EF5350":peak>=69?"#FF7043":"#FFA726";
+
   useEffect(()=>{
     async function run() {
       try {
-        const [histRes,outageRes]=await Promise.all([fetch("/api/history?window=6m"),fetch("/api/outages")]);
+        const [histRes,outageRes]=await Promise.all([
+          fetch("/api/history?window=7d"),
+          fetch("/api/outages"),
+        ]);
         const [histData,outageData]=await Promise.all([histRes.json(),outageRes.json()]);
-        const recentPoints=(histData?.points||[]).slice(-72).map(p=>`${new Date(p.ts).toISOString().slice(11,16)} ${p["CHW-S"]}°F`).join("\n");
-        const outagesSummary=(outageData?.outages||[]).map(o=>`${new Date(o.start).toLocaleDateString("en-US",{month:"short",day:"numeric"})} — ${o.durationHrs}h, peak ${o.peakTemp}°F${o.ambientDelta!=null?`, +${o.ambientDelta}° above ambient`:""}`).join("\n");
-        const response=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({summary:`CURRENT STATUS: ${cwsStatus.toUpperCase()} at ${currentReading}°F\n\nRECENT TREND (last 6 hours):\n${recentPoints}\n\nPAST OUTAGE EVENTS:\n${outagesSummary}`,cwsStatus,currentReading,mode:"current"})});
+
+        // Store outages for sidebar (most recent first, max 6)
+        setOutages(([...(outageData?.outages||[])]).reverse().slice(0,6));
+
+        // Build recent trend — last 6 hours at 5-min resolution
+        const recentPoints=(histData?.points||[]).slice(-72)
+          .map(p=>`${new Date(p.ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})} ${p["CHW-S"]}°F`)
+          .join(", ");
+
+        // Pattern summary from past outages
+        const pastOutages=(outageData?.outages||[]).slice(-10);
+        const starts=pastOutages.map(o=>new Date(o.start).getHours());
+        const nightOutages=starts.filter(h=>h>=22||h<=6).length;
+        const morningOutages=starts.filter(h=>h>6&&h<=10).length;
+        const patternNote=nightOutages>morningOutages
+          ? `${nightOutages}/${pastOutages.length} past outages started between 10pm-6am`
+          : `${morningOutages}/${pastOutages.length} past outages started between 6am-10am`;
+        const avgDuration=pastOutages.length
+          ? +(pastOutages.reduce((s,o)=>s+o.durationHrs,0)/pastOutages.length).toFixed(1)
+          : null;
+        const maxPeak=pastOutages.length?Math.max(...pastOutages.map(o=>o.peakTemp)):null;
+
+        const prompt=`You are the HVAC monitor for American Towers, a high-rise condo in Salt Lake City. The building chiller has recurring outage issues.
+
+CURRENT: CWS is ${cwsStatus.toUpperCase()} at ${currentReading}°F (nominal <57°F, degraded 57-65°F, offline >65°F)
+RECENT TREND (last 6h): ${recentPoints}
+
+HISTORICAL PATTERN: ${patternNote}. Average outage duration: ${avgDuration}h. Worst peak: ${maxPeak}°F.
+Resident thermostat: cools to 70°F overnight (9pm-7am) — peak demand period aligns with most outage starts.
+
+Respond in plain English, 3 short paragraphs max, no bullet points, no markdown:
+1. What is happening right now and how serious is it?
+2. How does this compare to the typical outage pattern — is this early-stage, mid-outage, or atypical?
+3. One practical recommendation for engineering or residents.`;
+
+        const response=await fetch("/api/analyze",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({summary:prompt,cwsStatus,currentReading,mode:"current"}),
+        });
         const data=await response.json();
-        setAnalysis(data.analysis);
+        setAnalysis(data.analysis||"Analysis unavailable.");
       } catch { setAnalysis("Failed to generate analysis. Please try again."); }
       setLoading(false);
     }
     run();
   },[]);
+
   return (
     <div onClick={e=>{if(e.target===e.currentTarget)onClose();}}
       style={{position:"fixed",inset:0,zIndex:300,background:"rgba(20,0,0,0.88)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-      <div style={{background:"#0f0505",border:"1px solid #EF535044",borderRadius:14,padding:"24px 28px",width:"100%",maxWidth:640,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 12px 50px #000e",fontFamily:"'DM Mono',monospace"}}>
+      <div style={{background:"#0f0505",border:"1px solid #EF535044",borderRadius:14,padding:"24px 28px",width:"100%",maxWidth:860,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 12px 50px #000e",fontFamily:"'DM Mono',monospace"}}>
+
+        {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,paddingBottom:14,borderBottom:"1px solid #2a0a0a"}}>
           <div>
             <div style={{fontSize:14,color:"#ef9a9a",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:1}}>🔴 ACTIVE OUTAGE ANALYSIS</div>
@@ -377,14 +436,48 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
           </div>
           <button onClick={onClose} style={{background:"none",border:"none",color:"#6a2a2a",cursor:"pointer",fontSize:18,padding:0}}>✕</button>
         </div>
-        {loading?(
-          <div style={{padding:"40px 0",textAlign:"center"}}>
-            <div style={{fontSize:11,color:"#6a2a2a",letterSpacing:2,marginBottom:8}}>ANALYZING CURRENT SITUATION...</div>
-            <div style={{fontSize:10,color:"#3a1010"}}>Comparing to historical outage signatures</div>
+
+        {/* Split layout */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 280px",gap:20}}>
+          {/* Left: AI analysis */}
+          <div>
+            {loading?(
+              <div style={{padding:"40px 0",textAlign:"center"}}>
+                <div style={{fontSize:11,color:"#6a2a2a",letterSpacing:2,marginBottom:8}}>ANALYZING CURRENT SITUATION...</div>
+                <div style={{fontSize:10,color:"#3a1010"}}>Comparing to historical outage signatures</div>
+              </div>
+            ):(
+              <div style={{fontSize:13,color:"#f5c6c6",lineHeight:1.9}}>{analysis}</div>
+            )}
           </div>
-        ):(
-          <div style={{fontSize:13,color:"#f5c6c6",lineHeight:1.8,whiteSpace:"pre-wrap"}}>{analysis}</div>
-        )}
+
+          {/* Right: condensed outage timeline */}
+          <div style={{borderLeft:"1px solid #2a0a0a",paddingLeft:20}}>
+            <div style={{fontSize:9,color:"#6a2a2a",letterSpacing:2,marginBottom:12}}>RECENT OUTAGES</div>
+            {outages.length===0&&!loading&&(
+              <div style={{fontSize:10,color:"#3a1010"}}>No historical events found.</div>
+            )}
+            {outages.map((o,i)=>{
+              const color=severityColor(o.peakTemp);
+              const widthPct=Math.min(100,Math.max(4,(o.durationHrs/30)*100));
+              return (
+                <div key={i} style={{marginBottom:12}}>
+                  <div style={{fontSize:10,color:"#c8a0a0",marginBottom:3}}>
+                    {fmtShort(o.start)}
+                    {o.ongoing&&<span style={{color:"#EF5350",marginLeft:6}}>● ONGOING</span>}
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:color,marginBottom:3}}>
+                    <span>{o.durationHrs}h</span>
+                    <span>peak {o.peakTemp}°F</span>
+                  </div>
+                  <div style={{height:4,background:"#1a0505",borderRadius:2,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${widthPct}%`,background:color,borderRadius:2,opacity:0.8}}/>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -523,6 +616,17 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
           </div>
           <div style={{marginTop:6,fontSize:9,color:"#2a4050"}}>
             Warning fires at ≥{warnRateOfRise}°F/10min · {warnCooldownHours}h between warnings
+          </div>
+        </div>
+
+        {/* CHW delta badge logic reference */}
+        <div style={{marginBottom:14,background:"#080e1a",border:"1px solid #1a2d45",borderRadius:8,padding:"10px 12px"}}>
+          <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>CHW SUPPLY→RETURN DELTA LOGIC</div>
+          <div style={{fontSize:9,color:"#2a4a60",lineHeight:1.7}}>
+            Supply sensor is upstream of valve (always sees loop). Return is downstream (dead-leg when valve closed).<br/>
+            <span style={{color:"#4CAF50"}}>● GREEN</span> — Δ 5–18°F · normal (valve closed or actively cooling)<br/>
+            <span style={{color:"#FFA726"}}>● AMBER</span> — Δ &lt;5°F · valve transitioning, or Δ &gt;18°F · unusually large<br/>
+            <span style={{color:"#EF5350"}}>● RED</span> — Δ &lt;5°F AND both sensors &gt;57°F · chiller offline, loop equalizing
           </div>
         </div>
 
@@ -698,7 +802,7 @@ export default function App() {
         <div style={{marginBottom:22}}>
           <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:3,marginBottom:10}}>DIFFERENTIAL ANALYSIS</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(175px,1fr))",gap:10}}>
-            <DeltaBadge label="CHW SUPPLY → RETURN" a={readings["CHW-S"]} b={readings["CHW-R"]} colorA={SENSORS[0].color} colorB={SENSORS[1].color}/>
+            <DeltaBadge label="CHW SUPPLY → RETURN" a={readings["CHW-S"]} b={readings["CHW-R"]} colorA={SENSORS[0].color} colorB={SENSORS[1].color} cwsStatus={cwsStatus} isCHW={true}/>
             {showHot&&<>
               <DeltaBadge label="HHW SUPPLY → RETURN" a={readings["HHW-S"]} b={readings["HHW-R"]} colorA={SENSORS[2].color} colorB={SENSORS[3].color}/>
               <DeltaBadge label="COLD vs HOT SUPPLY"  a={readings["CHW-S"]} b={readings["HHW-S"]} colorA={SENSORS[0].color} colorB={SENSORS[2].color}/>
