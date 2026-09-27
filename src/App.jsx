@@ -209,19 +209,28 @@ function DeltaBadge({ label, a, b, colorA, colorB, cwsStatus, isCHW }) {
   );
 }
 
-function StatusBanner({ cwsStatus, engState, eta, situationFlag }) {
+function SituationNote({ situationFlag }) {
+  if (!situationFlag) return null;
+  return (
+    <div style={{marginTop:12,background:"#071828",border:"1px solid #1a3a5a",borderRadius:8,padding:"11px 16px",display:"flex",alignItems:"flex-start",gap:10}}>
+      <span style={{fontSize:14,marginTop:1,flexShrink:0}}>🔵</span>
+      <span style={{fontSize:13,color:"#90caf9",lineHeight:1.6}}>{situationFlag}</span>
+    </div>
+  );
+}
+
+function EngineeringBanner({ cwsStatus, engState, eta }) {
   const meta=STATUS_META[cwsStatus];
-  if (cwsStatus==="nominal"&&engState==="none"&&!situationFlag) return null;
+  if (cwsStatus==="nominal"&&engState==="none") return null;
   let msg=meta.baseMsg||"";
   if (engState==="aware") msg=[msg,ENG_STATES.aware.suffix].filter(Boolean).join(" ");
   else if (engState==="maintenance") {
     const etaPart=eta?`Estimated return to service: ${eta}.`:"Return to service time is being determined.";
     msg=[msg,"System is offline for scheduled maintenance.",etaPart].filter(Boolean).join(" ");
   }
-  if (situationFlag) msg=[msg,situationFlag].filter(Boolean).join(" ");
   if (!msg) return null;
   return (
-    <div style={{marginTop:16,background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:8,padding:"11px 16px",display:"flex",alignItems:"flex-start",gap:10}}>
+    <div style={{marginTop:12,background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:8,padding:"11px 16px",display:"flex",alignItems:"flex-start",gap:10}}>
       <span style={{fontSize:14,marginTop:1,flexShrink:0}}>{cwsStatus==="offline"?"🔴":cwsStatus==="degraded"?"🟡":"🔵"}</span>
       <span style={{fontSize:13,color:cwsStatus==="offline"?"#ef9a9a":cwsStatus==="degraded"?"#ffcc80":"#90caf9",lineHeight:1.6}}>{msg}</span>
     </div>
@@ -538,17 +547,20 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
       </div>
       <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
 
-      {/* Situation flag */}
+      {/* Situation note — always-visible info box */}
       <div style={{marginBottom:14}}>
-        <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>SITUATION NOTE (shown on dashboard)</div>
-        <textarea value={situationFlag} onChange={e=>setSituationFlag(e.target.value)} placeholder="e.g. Chiller compressor replaced, monitoring for stability..." rows={2}
+        <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>SITUATION NOTE <span style={{color:"#1e3a55"}}>· always visible when set</span></div>
+        <textarea value={situationFlag} onChange={e=>setSituationFlag(e.target.value)}
+          placeholder="e.g. Chiller compressor replaced Jun 5, monitoring for stability. Contact building engineering with questions."
+          rows={3}
           style={{width:"100%",background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 10px",fontSize:11,fontFamily:"'DM Mono',monospace",outline:"none",resize:"vertical"}}/>
+        <div style={{fontSize:9,color:"#1e3a55",marginTop:4}}>Shown as a persistent blue info box regardless of chiller status.</div>
       </div>
       <div style={{borderTop:"1px solid #1a2d45",marginBottom:14}}/>
 
-      {/* Banner override */}
+      {/* Banner override — status-driven colored banner */}
       <div style={{marginBottom:14}}>
-        <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:8}}>BANNER STATUS OVERRIDE</div>
+        <div style={{fontSize:10,color:"#3a6080",letterSpacing:1,marginBottom:6}}>ENGINEERING STATUS OVERRIDE <span style={{color:"#1e3a55"}}>· colored banner</span></div>
         <div style={{display:"flex",flexDirection:"column",gap:7}}>
           <button onClick={()=>setEngState("none")}        style={engState==="none"        ?activeBtn("#4a7fa5"):inactiveBtn()}>No override — sensor-driven only</button>
           <button onClick={()=>setEngState("aware")}       style={engState==="aware"       ?activeBtn("#FFA726"):inactiveBtn()}>We're aware &amp; investigating</button>
@@ -785,7 +797,8 @@ export default function App() {
               <div style={{fontSize:12,color:"#3a6a8a",fontFamily:"'DM Mono',monospace"}}>{fmtTime(lastUpdate)}</div>
             </div>
           </div>
-          <StatusBanner cwsStatus={cwsStatus} engState={engState} eta={eta} situationFlag={situationFlag}/>
+          <SituationNote situationFlag={situationFlag}/>
+          <EngineeringBanner cwsStatus={cwsStatus} engState={engState} eta={eta}/>
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:14,marginBottom:22}}>
