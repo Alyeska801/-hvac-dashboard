@@ -187,11 +187,29 @@ export default async function handler(req, res) {
         const timeSinceLast = now - lastAlertTime;
 
         if (cwsStatus === "nominal" && lastAlertType && lastAlertType !== "recovery" && sendRecovery) {
-          await sendAlert({ type: "recovery", cwsTemp, recipients, situationFlag });
+          // Set recovering state in settings
+          const graceMins = settings.recoveryGraceMins ?? 120;
+          const recoveringUntil = now + graceMins * 60 * 1000;
+          const current = await redis.get("hvac-settings") || {};
+          await redis.set("hvac-settings", { ...current, recoveringUntil, engState: current.engState || "none" });
+
+          // Build outage summary from alert state
+          const outageStart = alertState.time || null;
+          const durationHrs = outageStart ? +((now - outageStart) / 3600000).toFixed(1) : null;
+          const peakTemp = alertState.peakTemp || cwsTemp;
+          const startStr = outageStart ? new Date(outageStart).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}) : "unknown";
+          const endStr = new Date(now).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false});
+
+          await sendAlert({ type: "recovery", cwsTemp, recipients, situationFlag, durationHrs, peakTemp, startStr, endStr });
           await redis.set("hvac-alert-state", { type: "recovery", time: now });
         } else if (cwsStatus === "offline" && lastAlertType !== "offline") {
           await sendAlert({ type: "offline", cwsTemp, recipients, situationFlag });
-          await redis.set("hvac-alert-state", { type: "offline", time: now });
+          await redis.set("hvac-alert-state", { type: "offline", time: now, peakTemp: cwsTemp });
+        } else if (cwsStatus === "offline" && lastAlertType === "offline") {
+          // Update peak temp if higher
+          if (cwsTemp > (alertState.peakTemp || 0)) {
+            await redis.set("hvac-alert-state", { ...alertState, peakTemp: cwsTemp });
+          }
         } else if (cwsStatus === "degraded" && lastAlertType !== "offline") {
           // Check rate of rise
           const pipeline = redis.pipeline();

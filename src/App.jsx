@@ -16,11 +16,12 @@ const DEFAULT_DEGRADED = 57;
 const DEFAULT_OFFLINE  = 65;
 const AMBIENT_MATCH_DELTA = 8;
 
-function getCWSStatus(cwsTemp, ambientTemp, matchDelta, offlineT, degradedT) {
+function getCWSStatus(cwsTemp, ambientTemp, matchDelta, offlineT, degradedT, recoveringUntil) {
   if (cwsTemp == null) return "nominal";
   if (ambientTemp !== null && cwsTemp >= ambientTemp - matchDelta) return "offline";
   if (cwsTemp >= offlineT)  return "offline";
   if (cwsTemp >= degradedT) return "degraded";
+  if (recoveringUntil && Date.now() < recoveringUntil) return "recovering";
   return "nominal";
 }
 function getSensorStatus(id, val, degradedT = DEFAULT_DEGRADED, offlineT = DEFAULT_OFFLINE) {
@@ -32,9 +33,10 @@ function getSensorStatus(id, val, degradedT = DEFAULT_DEGRADED, offlineT = DEFAU
 }
 
 const STATUS_META = {
-  nominal:  { color:"#4CAF50", bg:"#0d2218", border:"#4CAF5040", label:"NOMINAL",  baseMsg:null },
-  degraded: { color:"#FFA726", bg:"#261a04", border:"#FFA72640", label:"DEGRADED", baseMsg:"You may notice cooling takes longer than usual." },
-  offline:  { color:"#EF5350", bg:"#220808", border:"#EF535040", label:"OFFLINE",  baseMsg:"Chilled water is not circulating in the building." },
+  nominal:    { color:"#4CAF50", bg:"#0d2218", border:"#4CAF5040", label:"NOMINAL",    baseMsg:null },
+  recovering: { color:"#26C6DA", bg:"#041e22", border:"#26C6DA40", label:"RECOVERING", baseMsg:"Chilled water has returned to normal range. System is being monitored for stability." },
+  degraded:   { color:"#FFA726", bg:"#261a04", border:"#FFA72640", label:"DEGRADED",   baseMsg:"You may notice cooling takes longer than usual." },
+  offline:    { color:"#EF5350", bg:"#220808", border:"#EF535040", label:"OFFLINE",    baseMsg:"Chilled water is not circulating in the building." },
 };
 const ENG_STATES = {
   none:        { suffix: null },
@@ -86,14 +88,38 @@ function Sparkline({ data, color, width=210, height=34 }) {
   );
 }
 
-function Gauge({ value, min, max, color, status }) {
+function Gauge({ value, min, max, color, status, degradedT, offlineT }) {
   const pct=Math.max(0,Math.min(1,((value??min)-min)/(max-min)));
   const nc={normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status]||"#ccc";
+  // Arc geometry: total arc length is 119.4px over 270 degrees
+  const arcLen = 119.4;
+  const degradedPct = degradedT != null ? Math.max(0,Math.min(1,(degradedT-min)/(max-min))) : null;
+  const offlinePct  = offlineT  != null ? Math.max(0,Math.min(1,(offlineT -min)/(max-min))) : null;
   return (
     <svg width="90" height="62" viewBox="0 0 90 62">
+      {/* Background track */}
       <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke="#1a2535" strokeWidth="7" strokeLinecap="round"/>
-      <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke={color} strokeWidth="4"
-        strokeDasharray={`${pct*119.4} 119.4`} strokeLinecap="round" opacity="0.65"/>
+      {/* Zone bands */}
+      {degradedPct!=null&&offlinePct!=null ? <>
+        {/* Green zone: min to degraded */}
+        <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke="#4CAF50"
+          strokeDasharray={`${degradedPct*arcLen} ${arcLen}`} strokeWidth="4" strokeLinecap="round" opacity="0.5"/>
+        {/* Amber zone: degraded to offline */}
+        <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke="#FFA726"
+          strokeDasharray={`${(offlinePct-degradedPct)*arcLen} ${arcLen}`}
+          strokeDashoffset={`${-degradedPct*arcLen}`}
+          strokeWidth="4" strokeLinecap="round" opacity="0.5"/>
+        {/* Red zone: offline to max */}
+        <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke="#EF5350"
+          strokeDasharray={`${(1-offlinePct)*arcLen} ${arcLen}`}
+          strokeDashoffset={`${-offlinePct*arcLen}`}
+          strokeWidth="4" strokeLinecap="round" opacity="0.5"/>
+      </> : (
+        /* Fallback: single color fill */
+        <path d="M8,58 A38,38 0 0,1 82,58" fill="none" stroke={color} strokeWidth="4"
+          strokeDasharray={`${pct*arcLen} ${arcLen}`} strokeLinecap="round" opacity="0.65"/>
+      )}
+      {/* Needle */}
       <g transform={`rotate(${-135+pct*270},45,58)`}>
         <line x1="45" y1="58" x2="45" y2="26" stroke={nc} strokeWidth="2.2" strokeLinecap="round"/>
         <circle cx="45" cy="58" r="3.5" fill={nc}/>
@@ -138,6 +164,12 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
   const slbl={normal:"NOMINAL",warning:"ELEVATED",critical:"ALERT"}[status];
   const [gMin,gMax]=GAUGE_RANGES[sensor.id];
   const isCWS=sensor.id==="CHW-S";
+  // Only pass zone thresholds for CHW-S
+  const gDegraded = isCWS ? degradedT : null;
+  const gOffline  = isCWS ? offlineT  : null;
+  // Sparkline time labels
+  const firstTime = history&&history.length>0 ? history[0].time : null;
+  const firstLabel = firstTime ? new Date(firstTime).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:false}) : null;
   return (
     <div style={{background:"linear-gradient(135deg,#0d1b2e 0%,#0a1525 100%)",border:"1px solid #1e2d45",borderRadius:12,padding:"18px 18px 14px",position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:12,right:12,background:sbg,border:`1px solid ${sdot}40`,borderRadius:20,padding:"3px 10px",display:"flex",alignItems:"center",gap:5}}>
@@ -149,7 +181,7 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
         <div style={{fontSize:12,color:"#6a8eaa",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>{sensor.role.toUpperCase()}</div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10,marginTop:6}}>
-        <Gauge value={reading} min={gMin} max={gMax} color={sensor.color} status={status}/>
+        <Gauge value={reading} min={gMin} max={gMax} color={sensor.color} status={status} degradedT={gDegraded} offlineT={gOffline}/>
         <div>
           <div style={{fontSize:36,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",color:"#e8f4fd",lineHeight:1}}>{reading??"—"}</div>
           <div style={{fontSize:13,color:"#3a6a8a",fontFamily:"'DM Mono',monospace"}}>°F</div>
@@ -157,7 +189,13 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
       </div>
       <div style={{marginTop:10}}>
         {history&&history.length>=2
-          ? <Sparkline data={history} color={sensor.color}/>
+          ? <>
+              <Sparkline data={history} color={sensor.color}/>
+              <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}>
+                <span style={{fontSize:8,color:"#1e3a55",fontFamily:"'DM Mono',monospace"}}>{firstLabel||""}</span>
+                <span style={{fontSize:8,color:"#1e3a55",fontFamily:"'DM Mono',monospace"}}>NOW</span>
+              </div>
+            </>
           : <div style={{height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#1e3a55",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>COLLECTING DATA...</div>}
       </div>
       {isCWS&&<UptimeBar uptime={uptime}/>}
@@ -511,6 +549,7 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
                       alertRecipients,setAlertRecipients,sendRecoveryEmails,setSendRecoveryEmails,
                       degradedThreshold,setDegradedThreshold,offlineThreshold,setOfflineThreshold,
                       warnRateOfRise,setWarnRateOfRise,warnCooldownHours,setWarnCooldownHours,
+                      recoveryGraceMins,setRecoveryGraceMins,
                       showHot,setShowHot,onClose,onSave,saving }) {
   const [ambDraft,setAmbDraft]=useState(ambientTemp??"");
   const [deltaDraft,setDeltaDraft]=useState(matchDelta);
@@ -626,6 +665,11 @@ function AdminPanel({ ambientTemp,setAmbientTemp,matchDelta,setMatchDelta,
                 style={{width:"100%",background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 8px",fontSize:13,fontFamily:"'DM Mono',monospace",outline:"none",textAlign:"center"}}/>
             </div>
           </div>
+          <div style={{marginTop:8,display:"flex",alignItems:"center",gap:8}}>
+            <div style={{fontSize:9,color:"#3a6080",flex:1}}>RECOVERY GRACE PERIOD (minutes)</div>
+            <input type="number" value={recoveryGraceMins} onChange={e=>setRecoveryGraceMins(parseFloat(e.target.value)||30)}
+              style={{width:70,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#c8dff0",padding:"7px 8px",fontSize:13,fontFamily:"'DM Mono',monospace",outline:"none",textAlign:"center"}}/>
+          </div>
           <div style={{marginTop:6,fontSize:9,color:"#2a4050"}}>
             Warning fires at ≥{warnRateOfRise}°F/10min · {warnCooldownHours}h between warnings
           </div>
@@ -696,6 +740,8 @@ export default function App() {
   const [offlineThreshold,   setOfflineThreshold]    = useState(DEFAULT_OFFLINE);
   const [warnRateOfRise,     setWarnRateOfRise]      = useState(1.0);
   const [warnCooldownHours,  setWarnCooldownHours]   = useState(4);
+  const [recoveryGraceMins,  setRecoveryGraceMins]   = useState(120);
+  const [recoveringUntil,    setRecoveringUntil]     = useState(null);
   const [adminOpen,          setAdminOpen]           = useState(false);
   const [pwModal,            setPwModal]             = useState(false);
   const [pwDraft,            setPwDraft]             = useState("");
@@ -714,6 +760,8 @@ export default function App() {
       if(s.offlineThreshold)               setOfflineThreshold(s.offlineThreshold);
       if(s.warnRateOfRise)                 setWarnRateOfRise(s.warnRateOfRise);
       if(s.warnCooldownHours)              setWarnCooldownHours(s.warnCooldownHours);
+      if(s.recoveryGraceMins)              setRecoveryGraceMins(s.recoveryGraceMins);
+      if(s.recoveringUntil)                setRecoveringUntil(s.recoveringUntil);
     }).catch(console.error);
     fetch("/api/history?window=6m").then(r=>r.json()).then(d=>{if(d.uptime)setUptime(d.uptime);}).catch(console.error);
   },[]);
@@ -723,7 +771,7 @@ export default function App() {
     try {
       await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({showHot,engState,eta,situationFlag,alertRecipients,sendRecoveryEmails,
-          degradedThreshold,offlineThreshold,warnRateOfRise,warnCooldownHours})});
+          degradedThreshold,offlineThreshold,warnRateOfRise,warnCooldownHours,recoveryGraceMins})});
     } catch(err){console.error(err);}
     setSaving(false);
   }
@@ -761,7 +809,7 @@ export default function App() {
 
   useEffect(()=>{refresh();const id=setInterval(refresh,600000);return()=>clearInterval(id);},[refresh]);
 
-  const cwsStatus  = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold);
+  const cwsStatus  = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold,recoveringUntil);
   const systemMeta = STATUS_META[cwsStatus];
   const visibleSensors = SENSORS.filter(s=>showHot||s.pipe!=="hot");
 
@@ -780,6 +828,12 @@ export default function App() {
       <div style={{position:"relative",zIndex:1,maxWidth:960,margin:"0 auto",padding:"24px 20px"}}>
 
         <div style={{marginBottom:24,borderBottom:"1px solid #1a2d45",paddingBottom:18}}>
+          {/* Permanent disclaimer */}
+          <div style={{marginBottom:14,background:"#060e1a",border:"1px solid #1a2d3a",borderRadius:7,padding:"8px 14px"}}>
+            <span style={{fontSize:10,color:"#2a4a6a",fontFamily:"'DM Mono',monospace",lineHeight:1.6}}>
+              This dashboard is independently operated by a resident and is not affiliated with or endorsed by American Towers HOA or building management. Data reflects a single monitoring point in the building's HVAC chilled and hot water loops and is provided for informational purposes only.
+            </span>
+          </div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
             <div>
               <div style={{fontSize:10,color:"#2a5a7a",letterSpacing:3,marginBottom:3}}>AMERICAN TOWERS · SALT LAKE CITY</div>
@@ -789,9 +843,34 @@ export default function App() {
               </div>
             </div>
             <div style={{textAlign:"right"}}>
-              <div style={{display:"inline-flex",alignItems:"center",gap:8,background:systemMeta.bg,border:`1px solid ${systemMeta.border}`,borderRadius:8,padding:"8px 16px",marginBottom:6}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:systemMeta.color,boxShadow:`0 0 8px ${systemMeta.color}`,animation:cwsStatus!=="nominal"?"pulse 1.2s infinite":"none"}}/>
-                <span style={{fontSize:12,fontWeight:500,color:systemMeta.color,letterSpacing:2,fontFamily:"'DM Mono',monospace"}}>{systemMeta.label}</span>
+              {/* Dual status pills */}
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginBottom:6,flexWrap:"wrap"}}>
+                {/* Chiller pill */}
+                {(()=>{
+                  const meta=STATUS_META[cwsStatus]||STATUS_META.nominal;
+                  return (
+                    <div style={{display:"inline-flex",alignItems:"center",gap:6,background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:8,padding:"6px 12px"}}>
+                      <div style={{width:7,height:7,borderRadius:"50%",background:meta.color,boxShadow:`0 0 7px ${meta.color}`,animation:cwsStatus!=="nominal"&&cwsStatus!=="recovering"?"pulse 1.2s infinite":"none"}}/>
+                      <span style={{fontSize:10,color:"#4a6a8a",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>CHILLER</span>
+                      <span style={{fontSize:11,fontWeight:500,color:meta.color,letterSpacing:2,fontFamily:"'DM Mono',monospace"}}>{meta.label}</span>
+                    </div>
+                  );
+                })()}
+                {/* Boiler pill — only when hot side visible */}
+                {showHot&&(()=>{
+                  const hhwTemp=readings["HHW-S"];
+                  const boilerColor="#FFA726";
+                  const boilerBg="#1a1000";
+                  return (
+                    <div style={{display:"inline-flex",alignItems:"center",gap:6,background:boilerBg,border:"1px solid #FFA72630",borderRadius:8,padding:"6px 12px"}}>
+                      <div style={{width:7,height:7,borderRadius:"50%",background:boilerColor,opacity:0.6}}/>
+                      <span style={{fontSize:10,color:"#6a4a2a",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>BOILER</span>
+                      <span style={{fontSize:11,fontWeight:500,color:boilerColor,letterSpacing:2,fontFamily:"'DM Mono',monospace",opacity:0.7}}>
+                        {hhwTemp!=null?`${hhwTemp}°F`:"—"} · SVC
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
               <div style={{fontSize:10,color:"#1e4060"}}>{fmtDate(lastUpdate)}</div>
               <div style={{fontSize:12,color:"#3a6a8a",fontFamily:"'DM Mono',monospace"}}>{fmtTime(lastUpdate)}</div>
@@ -874,6 +953,7 @@ export default function App() {
           offlineThreshold={offlineThreshold}   setOfflineThreshold={setOfflineThreshold}
           warnRateOfRise={warnRateOfRise}       setWarnRateOfRise={setWarnRateOfRise}
           warnCooldownHours={warnCooldownHours} setWarnCooldownHours={setWarnCooldownHours}
+          recoveryGraceMins={recoveryGraceMins} setRecoveryGraceMins={setRecoveryGraceMins}
           onClose={()=>setAdminOpen(false)}
           onSave={saveSettings}                 saving={saving}
         />

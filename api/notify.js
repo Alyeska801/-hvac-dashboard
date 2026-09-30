@@ -2,7 +2,7 @@
 
 const RESEND_API_URL = "https://api.resend.com/emails";
 
-export async function sendAlert({ type, cwsTemp, rate, eta, recipients, situationFlag }) {
+export async function sendAlert({ type, cwsTemp, rate, eta, recipients, situationFlag, durationHrs, peakTemp, startStr, endStr }) {
   if (!process.env.RESEND_API_KEY || !recipients?.length) return;
 
   const subjects = {
@@ -34,9 +34,13 @@ ${situationFlag ? `<p><strong>Engineering note:</strong> ${situationFlag}</p>` :
 <p>The chilled water supply at American Towers has returned to normal operating range.</p>
 <table style="border-collapse:collapse;font-family:monospace;margin:16px 0">
   <tr><td style="padding:4px 16px 4px 0;color:#666">Current CWS Temp</td><td><strong>${cwsTemp}°F</strong></td></tr>
+  ${durationHrs ? `<tr><td style="padding:4px 16px 4px 0;color:#666">Outage Duration</td><td><strong>${durationHrs} hours</strong></td></tr>` : ""}
+  ${startStr ? `<tr><td style="padding:4px 16px 4px 0;color:#666">Outage Start</td><td><strong>${startStr}</strong></td></tr>` : ""}
+  ${endStr ? `<tr><td style="padding:4px 16px 4px 0;color:#666">Recovery Time</td><td><strong>${endStr}</strong></td></tr>` : ""}
+  ${peakTemp ? `<tr><td style="padding:4px 16px 4px 0;color:#666">Peak Temperature</td><td><strong>${peakTemp}°F</strong></td></tr>` : ""}
 </table>
 ${situationFlag ? `<p><strong>Engineering note:</strong> ${situationFlag}</p>` : ""}
-<p>Monitor live: <a href="https://hvac-dashboard-wheat.vercel.app">HVAC Dashboard</a></p>
+<p>The system is now in a monitoring period. Monitor live: <a href="https://hvac-dashboard-wheat.vercel.app">HVAC Dashboard</a></p>
     `,
   };
 

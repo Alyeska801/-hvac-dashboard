@@ -6,6 +6,22 @@ export default async function handler(req, res) {
 
   const { summary, cwsStatus, currentReading } = req.body;
 
+  const systemPrompt = `You are an HVAC monitoring assistant for American Towers, a high-rise condominium in Salt Lake City built in 1984.
+
+BUILDING CONTEXT:
+- The building uses a 4-pipe chilled and hot water system serving fan coil units in each unit
+- The chiller has experienced recurring outages, primarily overnight between 10pm-6am
+- As of fall 2026, the building is transitioning to Free Cooling mode when outside temperatures permit — during this period, shorter or shallower temperature rises may reflect the system switching cooling modes rather than a true chiller failure
+- Building management and on-call engineering staff may or may not be aware of the current situation
+- The resident's thermostat runs to 70°F overnight (9pm-7am), which places peak demand on the chilled water loop during the most vulnerable hours
+
+YOUR ROLE:
+- Provide a concise current situation assessment and pattern comparison only
+- Do NOT provide operational or technical recommendations
+- Do NOT suggest what engineering should do or escalate
+- Write in plain English suitable for both residents and HOA board members
+- Maximum 3 short paragraphs, no bullet points, no markdown formatting, no headers`;
+
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -15,8 +31,9 @@ export default async function handler(req, res) {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: `You are analyzing HVAC chilled water supply (CWS) temperature data for American Towers, a high-rise condo in Salt Lake City. The building chiller has been experiencing issues.\n\nCURRENT STATUS: ${cwsStatus.toUpperCase()} — CWS is currently ${currentReading}°F\n(Nominal = below 57°F, Degraded = 57-65°F, Offline = above 65°F)\n\nHISTORICAL CWS DATA (hourly samples):\n${summary}\n\nProvide:\n1. Confirmed outage events — start time, peak temp, duration, recovery\n2. Pattern analysis — time of day, day of week, conditions preceding outages\n3. Current situation assessment vs historical pre-outage signatures\n4. Predictive assessment — likely trajectory\n5. Brief recommendation for building engineering\n\nBe specific with dates and temperatures. Plain English for both engineers and HOA board members.` }],
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: [{ role: "user", content: summary }],
     }),
   });
 

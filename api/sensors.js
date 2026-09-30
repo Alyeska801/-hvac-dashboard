@@ -27,18 +27,18 @@ export default async function handler(req, res) {
       ? JSON.parse(latest)
       : latest;
 
-    // Fetch last 30 real data points for sparklines (last 2.5 hours)
+    // Fetch last 72 real data points for sparklines (last 6 hours)
     const now = Date.now();
     const currentBucket = Math.floor(now / BUCKET_MS) * BUCKET_MS;
     const pipeline = redis.pipeline();
-    for (let i = 29; i >= 0; i--) {
+    for (let i = 71; i >= 0; i--) {
       pipeline.hgetall(`reading:${currentBucket - i * BUCKET_MS}`);
     }
     const results = await pipeline.exec();
 
     const sparklines = { "CHW-S": [], "CHW-R": [], "HHW-S": [], "HHW-R": [] };
     results.forEach((data, i) => {
-      const ts = currentBucket - (29 - i) * BUCKET_MS;
+      const ts = currentBucket - (71 - i) * BUCKET_MS;
       if (!data) return;
       ["CHW-S", "CHW-R", "HHW-S", "HHW-R"].forEach(id => {
         if (data[id] != null) {

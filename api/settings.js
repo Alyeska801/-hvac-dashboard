@@ -8,18 +8,18 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   const DEFAULT_SETTINGS = {
-    // Public / engineering settings
     showHot: true,
     engState: "none",
     eta: "",
     situationFlag: "",
     alertRecipients: [],
     sendRecoveryEmails: true,
-    // Owner-only settings
     warnCooldownHours: 4,
     degradedThreshold: 57,
     offlineThreshold: 65,
     warnRateOfRise: 1.0,
+    recoveryGraceMins: 120,
+    recoveringUntil: null,
   };
 
   if (req.method === "GET") {
