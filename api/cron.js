@@ -14,6 +14,10 @@ const AMBIENT_MATCH_DELTA = 8;
 const BUCKET_MS = 5 * 60 * 1000;
 const TTL_SECONDS = 60 * 60 * 24 * 190;
 
+// SLC coordinates for Open-Meteo outdoor temperature
+const OUTDOOR_LAT = 40.7608;
+const OUTDOOR_LON = -111.8910;
+
 export default async function handler(req, res) {
   if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -30,19 +34,37 @@ export default async function handler(req, res) {
     const situationFlag     = settings.situationFlag     || "";
     const sendRecovery      = settings.sendRecoveryEmails ?? true;
 
-    // Step 1: Get access token
-    const tokenRes = await fetch("https://api.yosmart.com/open/yolink/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: process.env.YOLINK_UAID,
-        client_secret: process.env.YOLINK_SECRET_KEY,
+    // Step 1: Get YoLink access token + fetch outdoor temp in parallel
+    const [tokenRes, outdoorRes] = await Promise.all([
+      fetch("https://api.yosmart.com/open/yolink/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: process.env.YOLINK_UAID,
+          client_secret: process.env.YOLINK_SECRET_KEY,
+        }),
       }),
-    });
+      fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${OUTDOOR_LAT}&longitude=${OUTDOOR_LON}&current=temperature_2m&temperature_unit=fahrenheit&forecast_days=1`
+      ).catch(() => null),
+    ]);
+
     const tokenData = await tokenRes.json();
     const accessToken = tokenData.access_token;
     if (!accessToken) return res.status(500).json({ error: "Token failed" });
+
+    // Parse outdoor temperature (public weather data only)
+    let outdoorF = null;
+    try {
+      if (outdoorRes && outdoorRes.ok) {
+        const outdoorData = await outdoorRes.json();
+        const raw = outdoorData?.current?.temperature_2m;
+        if (raw != null) outdoorF = +raw.toFixed(1);
+      }
+    } catch (_) {
+      // Outdoor temp fetch failed — continue without it
+    }
 
     // Step 2: Get device list
     const deviceListRes = await fetch("https://api.yosmart.com/open/yolink/v2/api", {
@@ -122,9 +144,15 @@ export default async function handler(req, res) {
       await redis.expire(`ambient:${bucket}`, TTL_SECONDS);
     }
 
-    // Step 10: Cache latest reading
+    // Step 9b: Store outdoor temperature (public weather data)
+    if (outdoorF != null) {
+      await redis.hset(`outdoor:${bucket}`, { temp: outdoorF });
+      await redis.expire(`outdoor:${bucket}`, TTL_SECONDS);
+    }
+
+    // Step 10: Cache latest reading (includes outdoor temp for analysis context)
     await redis.set("latest-reading", JSON.stringify({
-      readings, cwsStatus, ambientF, timestamp: new Date().toISOString(),
+      readings, cwsStatus, ambientF, outdoorF, timestamp: new Date().toISOString(),
     }), { ex: 600 });
 
     // Step 10b: Update outage cache incrementally
@@ -179,6 +207,8 @@ export default async function handler(req, res) {
     }
 
     // Step 11: Alert logic using configurable thresholds
+    // outageStartTime is set once when an outage begins and carried through ALL
+    // state transitions (recovery, re-failure) until a new genuine nominal period.
     try {
       if (recipients.length && cwsTemp != null) {
         const alertState = await redis.get("hvac-alert-state") || {};
@@ -194,19 +224,36 @@ export default async function handler(req, res) {
           await redis.set("hvac-settings", { ...current, recoveringUntil, engState: current.engState || "none" });
 
           // Build outage summary from alert state
-          const outageStart = alertState.time || null;
+          // Use outageStartTime if present (persists through brief recoveries), else fall back to alertState.time
+          const outageStart = alertState.outageStartTime || alertState.time || null;
           const durationHrs = outageStart ? +((now - outageStart) / 3600000).toFixed(1) : null;
           const peakTemp = alertState.peakTemp || cwsTemp;
           const startStr = outageStart ? new Date(outageStart).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}) : "unknown";
           const endStr = new Date(now).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false});
 
           await sendAlert({ type: "recovery", cwsTemp, recipients, situationFlag, durationHrs, peakTemp, startStr, endStr });
-          await redis.set("hvac-alert-state", { type: "recovery", time: now });
+          // Carry outageStartTime through recovery — cleared only when graceMins elapse
+          await redis.set("hvac-alert-state", {
+            type: "recovery",
+            time: now,
+            outageStartTime: alertState.outageStartTime || alertState.time,
+            peakTemp: alertState.peakTemp || cwsTemp,
+          });
         } else if (cwsStatus === "offline" && lastAlertType !== "offline") {
+          // Starting a new offline period.
+          // If we were in recovery (brief recovery → re-failure), keep the ORIGINAL outageStartTime.
+          // Otherwise this is a fresh outage — set outageStartTime to now.
+          const isReFailure = lastAlertType === "recovery" && alertState.outageStartTime;
+          const outageStartTime = isReFailure ? alertState.outageStartTime : now;
           await sendAlert({ type: "offline", cwsTemp, recipients, situationFlag });
-          await redis.set("hvac-alert-state", { type: "offline", time: now, peakTemp: cwsTemp });
+          await redis.set("hvac-alert-state", {
+            type: "offline",
+            time: now,
+            outageStartTime,
+            peakTemp: cwsTemp,
+          });
         } else if (cwsStatus === "offline" && lastAlertType === "offline") {
-          // Update peak temp if higher
+          // Still offline — update peak temp if higher, preserve outageStartTime
           if (cwsTemp > (alertState.peakTemp || 0)) {
             await redis.set("hvac-alert-state", { ...alertState, peakTemp: cwsTemp });
           }
@@ -228,13 +275,22 @@ export default async function handler(req, res) {
               await redis.set("hvac-alert-state", { type: "warning", time: now });
             }
           }
+        } else if (cwsStatus === "nominal" && lastAlertType === "recovery") {
+          // Check if grace period has elapsed — if so, clear outageStartTime (genuine recovery)
+          const graceMins = settings.recoveryGraceMins ?? 120;
+          const graceMs = graceMins * 60 * 1000;
+          if (now - lastAlertTime >= graceMs) {
+            // Grace period complete — genuine recovery, clear state
+            await redis.set("hvac-alert-state", { type: "nominal", time: now });
+          }
+          // Otherwise leave recovery state as-is (still within grace window)
         }
       }
     } catch (alertErr) {
       console.error("Alert error:", alertErr);
     }
 
-    res.status(200).json({ ok: true, readings, cwsStatus });
+    res.status(200).json({ ok: true, readings, cwsStatus, outdoorF });
 
   } catch (err) {
     res.status(500).json({ error: err.message });

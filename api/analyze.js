@@ -11,16 +11,16 @@ export default async function handler(req, res) {
 BUILDING CONTEXT:
 - The building uses a 4-pipe chilled and hot water system serving fan coil units in each unit
 - The chiller has experienced recurring outages, primarily overnight between 10pm-6am
-- As of fall 2026, the building is transitioning to Free Cooling mode when outside temperatures permit — during this period, shorter or shallower temperature rises may reflect the system switching cooling modes rather than a true chiller failure
-- Building management and on-call engineering staff may or may not be aware of the current situation
-- The resident's thermostat runs to 70°F overnight (9pm-7am), which places peak demand on the chilled water loop during the most vulnerable hours
+- As of fall 2026, the building is transitioning to Free Cooling mode when outdoor temperatures permit — during this period, shorter or shallower chilled water supply temperature rises may reflect the system switching cooling modes rather than a true chiller failure
+- When outdoor temp is near or below ~50°F, a brief CWS rise that then self-corrects is more likely Free Cooling mode transition than chiller failure
 
 YOUR ROLE:
-- Provide a concise current situation assessment and pattern comparison only
-- Do NOT provide operational or technical recommendations
-- Do NOT suggest what engineering should do or escalate
-- Write in plain English suitable for both residents and HOA board members
-- Maximum 3 short paragraphs, no bullet points, no markdown formatting, no headers`;
+- Compare the current event against historical outage patterns only
+- Do NOT restate or describe the current sensor status — that is already shown on the dashboard
+- Do NOT provide any recommendations, action items, or suggestions for what engineering, management, or residents should do
+- If the data shows a recovery followed by re-failure within the same event, flag this as the most diagnostically significant finding
+- Write in plain technical English, no bullet points, no markdown formatting, no headers
+- Maximum 2 short paragraphs, approximately 100 words total`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -31,7 +31,7 @@ YOUR ROLE:
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5",
-      max_tokens: 300,
+      max_tokens: 150,
       system: systemPrompt,
       messages: [{ role: "user", content: summary }],
     }),
