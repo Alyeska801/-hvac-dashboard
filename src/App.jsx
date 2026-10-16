@@ -277,10 +277,10 @@ function EngineeringBanner({ cwsStatus, engState, eta }) {
   const meta=STATUS_META[cwsStatus];
   if (cwsStatus==="nominal"&&engState==="none") return null;
   let msg=meta.baseMsg||"";
-  if (engState==="aware") msg=[msg,ENG_STATES.aware.suffix].filter(Boolean).join(" ");
+  if (engState==="aware") msg=[msg,ENG_STATES.aware.suffix].filter(Boolean).join("\n");
   else if (engState==="maintenance") {
     const etaPart=eta?`Estimated return to service: ${eta}.`:"Return to service time is being determined.";
-    msg=[msg,"System is offline for scheduled maintenance.",etaPart].filter(Boolean).join(" ");
+    msg=[msg,"System is offline for scheduled maintenance.",etaPart].filter(Boolean).join("\n");
   }
   if (!msg) return null;
   return (
@@ -508,8 +508,7 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
           over10.length ? `- Outages lasting 10+ hours: ${over10.length} of ${historical.length}` : null,
           `- ${nightPct}% of past outages began between 10pm and 6am (this one began at 2:40am, consistent with that pattern)`,
           vsRecord!=null&&vsRecord>1 ? `- At ${durationHrs} hours, this outage is ${vsRecord}x longer than the previous record of ${longest} hours` : null,
-        ].filter(Boolean).join("
-");
+        ].filter(Boolean).join("\n");
 
         const response = await fetch("/api/analyze",{
           method:"POST",
