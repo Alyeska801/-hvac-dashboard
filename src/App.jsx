@@ -72,7 +72,7 @@ function Sparkline({ data, color, width=210, height=34 }) {
     t:times[i],
   }));
   return (
-    <svg width={width} height={height} style={{overflow:"visible",display:"block"}}>
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{overflow:"visible",display:"block"}}>
       <defs><linearGradient id={`sg${color.slice(1)}`} x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stopColor={color} stopOpacity="0.2"/>
         <stop offset="100%" stopColor={color} stopOpacity="0.01"/>
@@ -157,7 +157,7 @@ function UptimeBar({ uptime }) {
   );
 }
 
-function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, offlineT, onViewHistory, onAnalyze }) {
+function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, offlineT, outageStartTime, onViewHistory, onAnalyze }) {
   const status=getSensorStatus(sensor.id,reading,degradedT,offlineT);
   const sdot={normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status];
   const sbg ={normal:"#1b3a2a",warning:"#3a2a0a",critical:"#3a0a0a"}[status];
@@ -199,6 +199,22 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
           : <div style={{height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#1e3a55",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>COLLECTING DATA...</div>}
       </div>
       {isCWS&&<UptimeBar uptime={uptime}/>}
+      {(()=>{
+        const showTimer=isCWS&&outageStartTime&&(cwsStatus==="offline"||cwsStatus==="degraded"||cwsStatus==="recovering");
+        if(!showTimer) return null;
+        const elapsed=Date.now()-new Date(outageStartTime).getTime();
+        const h=Math.floor(elapsed/3600000);
+        const m=Math.floor((elapsed%3600000)/60000);
+        const timerLabel=h>0?`${h}h ${m}m`:`${m}m`;
+        return(
+          <div style={{margin:"8px 0 0",padding:"5px 10px",background:"#1a0505",border:"1px solid #EF535033",borderRadius:6,display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:5,height:5,borderRadius:"50%",background:"#EF5350",animation:"pulse 1.5s infinite",flexShrink:0}}/>
+            <span style={{fontSize:9,fontFamily:"'DM Mono',monospace",color:"#c87070",letterSpacing:1}}>
+              OUTAGE IN PROGRESS · {timerLabel}
+            </span>
+          </div>
+        );
+      })()}
       {isCWS&&(
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <button onClick={onViewHistory} style={{flex:1,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#4a7fa5",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,transition:"all 0.2s"}}
@@ -742,6 +758,8 @@ export default function App() {
   const [warnCooldownHours,  setWarnCooldownHours]   = useState(4);
   const [recoveryGraceMins,  setRecoveryGraceMins]   = useState(120);
   const [recoveringUntil,    setRecoveringUntil]     = useState(null);
+  const [outageStartTime,    setOutageStartTime]    = useState(null);
+  const [outdoorF,           setOutdoorF]            = useState(null);
   const [adminOpen,          setAdminOpen]           = useState(false);
   const [pwModal,            setPwModal]             = useState(false);
   const [pwDraft,            setPwDraft]             = useState("");
@@ -802,6 +820,8 @@ export default function App() {
           })));
         }
         setApiCwsStatus(data.cwsStatus);
+        setOutageStartTime(data.outageStartTime ?? null);
+        setOutdoorF(data.outdoorF ?? null);
         setLastUpdate(new Date());
       }
     }catch(err){console.error(err);}
@@ -885,6 +905,7 @@ export default function App() {
             <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}
               uptime={s.id==="CHW-S"?uptime:null} cwsStatus={cwsStatus}
               degradedT={degradedThreshold} offlineT={offlineThreshold}
+              outageStartTime={s.id==="CHW-S"?outageStartTime:null}
               onViewHistory={()=>setShowHistory(true)} onAnalyze={()=>setShowAnalysis(true)}/>
           ))}
         </div>
