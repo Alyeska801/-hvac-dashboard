@@ -494,8 +494,8 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
           return local>=22||local<6;
         });
         const nightPct = historical.length ? Math.round(nightOnsets.length/historical.length*100) : 0;
-        // Only show vs-record if current is meaningfully longer (>10% beyond prior record)
-        const vsRecord = (durationHrs && longest && durationHrs > longest * 1.1) ? +(durationHrs/longest).toFixed(1) : null;
+        // Flag if current has exceeded the prior record (any margin)
+        const vsRecord = (durationHrs && longest && durationHrs > longest) ? +(durationHrs/longest).toFixed(1) : null;
 
         // Current system state (recovering = returned to normal range, still in grace window)
         const isRecovering = cwsStatus === "recovering";
@@ -521,7 +521,7 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
           longest!=null ? `- Longest prior completed outage: ${longest} hours (${longestDate})` : null,
           over10.length ? `- Outages lasting 10+ hours: ${over10.length} of ${historical.length}` : null,
           nightPct ? `- ${nightPct}% of past outages began between 10pm and 6am` : null,
-          vsRecord ? `- At ${durationHrs} hours, this is now ${vsRecord}x longer than the previous record of ${longest} hours` : null,
+          vsRecord ? `- NOTE: at ${durationHrs} hours, this event has now exceeded the previous longest outage on record (${longest} hours). This is the new longest outage in building history.` : null,
         ].filter(Boolean).join("\n");
 
         const response = await fetch("/api/analyze",{
