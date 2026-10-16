@@ -500,7 +500,7 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
         // Current system state (recovering = returned to normal range, still in grace window)
         const isRecovering = cwsStatus === "recovering";
         const freeCoolingNote = outdoorF!=null && outdoorF<=62
-          ? `- Outdoor temperature is ${outdoorF}\u00b0F; the building may currently be in Free Cooling mode`
+          ? `- Cooler outdoor temperatures (${outdoorF}\u00b0F) may have the building operating in Free Cooling mode`
           : null;
 
         // --- Compose prompt ---
@@ -511,9 +511,9 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
           isRecovering
             ? `- Current status: RECOVERING — supply temperature has returned to normal range as of this analysis`
             : `- Status: still ongoing`,
-          peakTemp ? `- Peak CWS temperature reached: ${peakTemp}\u00b0F` : null,
+          peakTemp ? `- Peak CWS temperature reached during this event: ${peakTemp}\u00b0F (this is distinct from the 6-hour range below)` : null,
           recoveryNote,
-          trendNote ? `- Recent trend: ${trendNote}` : null,
+          trendNote ? `- 6-hour temperature range (not the event peak): ${trendNote}` : null,
           freeCoolingNote,
           ``,
           `HISTORICAL CONTEXT (based on ${historical.length} prior completed outages, not including this event):`,

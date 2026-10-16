@@ -11,8 +11,8 @@ export default async function handler(req, res) {
 Structure the paragraph in this exact order:
 1. When the outage started and its total duration so far.
 2. Current status — if RECOVERING, say supply temperature has returned to normal range. If still ongoing, say the system remains in a degraded or offline state.
-3. The temperature trajectory over the past six hours (range and direction), and the peak temperature reached during the event.
-4. Any Free Cooling note if provided — one clause only, no explanation of what Free Cooling is.
+3. The six-hour temperature range and direction. The peak temperature reached during the event is a separate fact from the six-hour range — do not conflate them.
+4. Any Free Cooling note if provided — use the phrasing given; do not explain what Free Cooling is.
 5. How this event compares to historical outages: median duration, number of long outages, and longest prior record. Use the numbers given exactly.
 
 Rules:
