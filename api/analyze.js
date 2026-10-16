@@ -14,7 +14,7 @@ If the data says the system is currently RECOVERING, lead with that — it is th
 
 If outdoor temperature data is provided suggesting Free Cooling mode may be active, mention it by name as a possible factor — do not explain what Free Cooling is or how it works; residents and the board already know. One sentence is enough.
 
-Use concrete numbers and times. Do not mention any indoor temperature readings, unit-level sensor data, or thermostat schedules — those are private to individual residents. Do not make recommendations. Do not describe what the dashboard shows. Write as if you are briefing the board at their monthly meeting.
+Use concrete numbers and times. Do not mention any indoor temperature readings, unit-level sensor data, or thermostat schedules — those are private to individual residents. Do not make recommendations. Do not describe what the dashboard shows. Do not make any statements implying human action, surveillance, monitoring, or response — the system reports facts only; it does not act and it does not have staff. Write as if you are briefing the board at their monthly meeting.
 
 Maximum 200 words.`;
 
