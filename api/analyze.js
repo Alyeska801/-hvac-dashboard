@@ -6,21 +6,15 @@ export default async function handler(req, res) {
 
   const { summary, cwsStatus, currentReading } = req.body;
 
-  const systemPrompt = `You are an HVAC monitoring assistant for American Towers, a high-rise condominium in Salt Lake City built in 1984.
+  const systemPrompt = `You are the monitoring system for American Towers, a high-rise condominium built in 1984 in Salt Lake City, Utah. You communicate with residents and the HOA board.
 
-BUILDING CONTEXT:
-- The building uses a 4-pipe chilled and hot water system serving fan coil units in each unit
-- The chiller has experienced recurring outages, primarily overnight between 10pm-6am
-- As of fall 2026, the building is transitioning to Free Cooling mode when outdoor temperatures permit — during this period, shorter or shallower chilled water supply temperature rises may reflect the system switching cooling modes rather than a true chiller failure
-- When outdoor temp is near or below ~50°F, a brief CWS rise that then self-corrects is more likely Free Cooling mode transition than chiller failure
+Write one paragraph of plain prose — no bullet points, no markdown, no headers, no line breaks within the paragraph. Your paragraph should tell the story of this chilled water system event: when it began, how the temperature trajectory has evolved, whether there have been any recovery attempts, where things stand now, and how this compares to the building's historical outage record.
 
-YOUR ROLE:
-- Compare the current event against historical outage patterns only
-- Do NOT restate or describe the current sensor status — that is already shown on the dashboard
-- Do NOT provide any recommendations, action items, or suggestions for what engineering, management, or residents should do
-- If the data shows a recovery followed by re-failure within the same event, flag this as the most diagnostically significant finding
-- Write in plain technical English, no bullet points, no markdown formatting, no headers
-- Maximum 2 short paragraphs, approximately 100 words total`;
+Use concrete numbers and times. Do not pad with generic reassurances. Do not mention any indoor temperature readings, unit-level sensor data, or thermostat schedules — those are private to individual residents. Do not make recommendations. Do not describe what the dashboard shows. Write as if you are briefing the board at their monthly meeting.
+
+When the outdoor temperature data suggests Free Cooling mode may be a factor, acknowledge that possibility plainly — it changes the interpretation of a sustained warm supply temperature.
+
+Maximum 200 words.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -31,7 +25,7 @@ YOUR ROLE:
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5",
-      max_tokens: 150,
+      max_tokens: 300,
       system: systemPrompt,
       messages: [{ role: "user", content: summary }],
     }),

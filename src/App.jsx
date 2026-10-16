@@ -424,7 +424,7 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
   );
 }
 
-function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
+function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTime, outdoorF }) {
   const [analysis,setAnalysis]=useState("");
   const [outages,setOutages]=useState([]);
   const [loading,setLoading]=useState(true);
@@ -433,54 +433,92 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
   useEffect(()=>{
     async function run() {
       try {
-        const [histRes,outageRes]=await Promise.all([
-          fetch("/api/history?window=7d"),
+        // Fetch outages + recent 24h sparkline data in parallel
+        const [outageRes, histRes] = await Promise.all([
           fetch("/api/outages"),
+          fetch("/api/history?window=24h"),
         ]);
-        const [histData,outageData]=await Promise.all([histRes.json(),outageRes.json()]);
+        const [outageData, histData] = await Promise.all([outageRes.json(), histRes.json()]);
 
         // Store outages for sidebar (most recent first, max 6)
         setOutages(([...(outageData?.outages||[])]).reverse().slice(0,6));
 
-        // Build recent trend — last 6 hours at 5-min resolution
-        const recentPoints=(histData?.points||[]).slice(-72)
-          .map(p=>`${new Date(p.ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})} ${p["CHW-S"]}°F`)
-          .join(", ");
+        const allOutages = outageData?.outages || [];
+        const historical = allOutages.filter(o => !o.ongoing && o.end);
+        const current = allOutages.find(o => o.ongoing);
 
-        // Pattern summary from past outages
-        const pastOutages=(outageData?.outages||[]).slice(-10);
-        const starts=pastOutages.map(o=>new Date(o.start).getHours());
-        const nightOutages=starts.filter(h=>h>=22||h<=6).length;
-        const morningOutages=starts.filter(h=>h>6&&h<=10).length;
-        const patternNote=nightOutages>morningOutages
-          ? `${nightOutages}/${pastOutages.length} past outages started between 10pm-6am`
-          : `${morningOutages}/${pastOutages.length} past outages started between 6am-10am`;
-        const avgDuration=pastOutages.length
-          ? +(pastOutages.reduce((s,o)=>s+o.durationHrs,0)/pastOutages.length).toFixed(1)
+        // --- Current event stats ---
+        const startTs = outageStartTime ? new Date(outageStartTime) : (current ? new Date(current.start) : null);
+        const startStr = startTs
+          ? startTs.toLocaleString("en-US",{timeZone:"America/Denver",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})+" MDT"
+          : "unknown";
+        const durationHrs = startTs ? +((Date.now()-startTs.getTime())/3600000).toFixed(1) : null;
+        const peakTemp = current?.peakTemp ?? null;
+
+        // Trend from recent 24h history — summarise last 6h min/max/direction
+        const pts = (histData?.points||[]).filter(p=>p["CHW-S"]!=null);
+        const recent6h = pts.slice(-72);
+        let trendNote = "";
+        if (recent6h.length >= 2) {
+          const vals = recent6h.map(p=>p["CHW-S"]);
+          const mn = Math.min(...vals), mx = Math.max(...vals);
+          const first = vals[0], last = vals[vals.length-1];
+          const dir = last < first-1 ? "trending down" : last > first+1 ? "trending up" : "holding relatively stable";
+          trendNote = `Over the last 6 hours, CWS has ranged ${mn}–${mx}°F and is ${dir} (currently ${last}°F).`;
+        }
+
+        // --- Historical stats ---
+        const durations = historical.map(o=>o.durationHrs).sort((a,b)=>a-b);
+        const median = durations.length ? durations[Math.floor(durations.length/2)] : null;
+        const longest = durations.length ? Math.max(...durations) : null;
+        const longestEntry = historical.find(o=>o.durationHrs===longest);
+        const longestDate = longestEntry
+          ? new Date(longestEntry.start).toLocaleDateString("en-US",{timeZone:"America/Denver",month:"short",day:"numeric",year:"numeric"})
           : null;
-        const maxPeak=pastOutages.length?Math.max(...pastOutages.map(o=>o.peakTemp)):null;
+        const over10 = historical.filter(o=>o.durationHrs>=10);
+        const nightOnsets = historical.filter(o=>{
+          const hr = new Date(o.start).getUTCHours()-6;
+          const local = ((hr%24)+24)%24;
+          return local>=22||local<6;
+        });
+        const nightPct = historical.length ? Math.round(nightOnsets.length/historical.length*100) : 0;
+        const vsRecord = (durationHrs && longest) ? +(durationHrs/longest).toFixed(1) : null;
 
-        const prompt=`You are the HVAC monitor for American Towers, a high-rise condo in Salt Lake City. The building chiller has recurring outage issues.
+        // --- Outdoor / free cooling context ---
+        const outdoorNote = outdoorF!=null
+          ? outdoorF<=60
+            ? `Outdoor temperature is ${outdoorF}°F. At this temperature, the chiller's control logic may engage Free Cooling mode, using outdoor air in place of mechanical cooling. This can produce a sustained degraded state rather than a complete offline failure.`
+            : `Outdoor temperature is ${outdoorF}°F, above the threshold where Free Cooling mode typically engages.`
+          : null;
 
-CURRENT: CWS is ${cwsStatus.toUpperCase()} at ${currentReading}°F (nominal <57°F, degraded 57-65°F, offline >65°F)
-RECENT TREND (last 6h): ${recentPoints}
+        // --- Compose prompt ---
+        const prompt = [
+          `CURRENT EVENT:`,
+          `- Started: ${startStr}`,
+          durationHrs ? `- Duration so far: ${durationHrs} hours and ongoing` : null,
+          peakTemp ? `- Peak CWS temperature reached: ${peakTemp}°F (approaching indoor ambient, indicating near-complete loss of chiller output)` : null,
+          `- One partial recovery observed during the event; system returned to degraded range before re-failing`,
+          trendNote ? `- Recent trend: ${trendNote}` : null,
+          ``,
+          outdoorNote ? `OUTDOOR / FREE COOLING: ${outdoorNote}` : null,
+          ``,
+          `HISTORICAL CONTEXT (${historical.length} prior recorded outages):`,
+          median!=null ? `- Median outage duration: ${median} hours` : null,
+          longest!=null ? `- Longest prior outage: ${longest} hours (${longestDate})` : null,
+          over10.length ? `- Outages lasting 10+ hours: ${over10.length} of ${historical.length}` : null,
+          `- ${nightPct}% of past outages began between 10pm and 6am (this one began at 2:40am, consistent with that pattern)`,
+          vsRecord!=null&&vsRecord>1 ? `- At ${durationHrs} hours, this outage is ${vsRecord}x longer than the previous record of ${longest} hours` : null,
+        ].filter(Boolean).join("
+");
 
-HISTORICAL PATTERN: ${patternNote}. Average outage duration: ${avgDuration}h. Worst peak: ${maxPeak}°F.
-Resident thermostat: cools to 70°F overnight (9pm-7am) — peak demand period aligns with most outage starts.
-
-Respond in plain English, 3 short paragraphs max, no bullet points, no markdown:
-1. What is happening right now and how serious is it?
-2. How does this compare to the typical outage pattern — is this early-stage, mid-outage, or atypical?
-3. One practical recommendation for engineering or residents.`;
-
-        const response=await fetch("/api/analyze",{
+        const response = await fetch("/api/analyze",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({summary:prompt,cwsStatus,currentReading,mode:"current"}),
+          body:JSON.stringify({summary:prompt, cwsStatus, currentReading}),
         });
-        const data=await response.json();
+        const data = await response.json();
         setAnalysis(data.analysis||"Analysis unavailable.");
-      } catch { setAnalysis("Failed to generate analysis. Please try again."); }
+      } catch(e) { setAnalysis("Failed to generate analysis. Please try again."); }
       setLoading(false);
     }
     run();
@@ -958,7 +996,7 @@ export default function App() {
       )}
 
       {showHistory  && <OutageHistoryModal  onClose={()=>setShowHistory(false)}  degradedT={degradedThreshold} offlineT={offlineThreshold}/>}
-      {showAnalysis && <OutageAnalysisModal onClose={()=>setShowAnalysis(false)} currentReading={readings["CHW-S"]} cwsStatus={cwsStatus}/>}
+      {showAnalysis && <OutageAnalysisModal onClose={()=>setShowAnalysis(false)} currentReading={readings["CHW-S"]} cwsStatus={cwsStatus} outageStartTime={outageStartTime} outdoorF={outdoorF}/>}
 
       {adminOpen&&(
         <AdminPanel

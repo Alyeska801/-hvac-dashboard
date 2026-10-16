@@ -38,10 +38,27 @@ async function main() {
   console.log("Keeping", before.length, "historical | merging", oct11plus.length, "into 1 sustained");
 
   const peakTemp = oct11plus.reduce((mx, o) => Math.max(mx, o.peakTemp || 0), 63);
-  const ambSamples = oct11plus.filter(o => o.ambientAvg).map(o => o.ambientAvg);
-  const ambientAvg = ambSamples.length
-    ? +(ambSamples.reduce((s, v) => s + v, 0) / ambSamples.length).toFixed(1)
+  // Fetch real ambient:{bucket} keys for the Oct 11→now window
+  // Each bucket covers 5 minutes; ambient was recorded every cron tick
+  const BUCKET_MS = 5 * 60 * 1000;
+  const startBucket = Math.floor(OUTAGE_START / BUCKET_MS) * BUCKET_MS;
+  const endBucket   = Math.floor(now / BUCKET_MS) * BUCKET_MS;
+  const bucketCount = Math.floor((endBucket - startBucket) / BUCKET_MS) + 1;
+  console.log(`
+Fetching ambient data: ${bucketCount} buckets from Oct 11 to now...`);
+
+  const pipeline = redis.pipeline();
+  for (let i = 0; i < bucketCount; i++) {
+    pipeline.hgetall(`ambient:${startBucket + i * BUCKET_MS}`);
+  }
+  const ambResults = await pipeline.exec();
+  const ambVals = ambResults
+    .map(r => r?.temp != null ? parseFloat(r.temp) : null)
+    .filter(v => v != null);
+  const ambientAvg = ambVals.length
+    ? +(ambVals.reduce((s, v) => s + v, 0) / ambVals.length).toFixed(1)
     : null;
+  console.log(`Found ${ambVals.length} ambient readings; average ${ambientAvg}°F`);
 
   const now = Date.now();
   const sustained = {
