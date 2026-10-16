@@ -12,10 +12,11 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET");
 
   try {
-    // Get latest reading and alert state in parallel
-    const [latest, alertState] = await Promise.all([
+    // Get latest reading, alert state, and settings in parallel
+    const [latest, alertState, settings] = await Promise.all([
       redis.get("latest-reading"),
       redis.get("hvac-alert-state"),
+      redis.get("hvac-settings"),
     ]);
 
     if (!latest) {
@@ -37,6 +38,10 @@ export default async function handler(req, res) {
       ? (typeof alertState === "string" ? JSON.parse(alertState) : alertState)
       : {};
     const outageStartTime = state.outageStartTime || null;
+    const cfg = settings
+      ? (typeof settings === "string" ? JSON.parse(settings) : settings)
+      : {};
+    const recoveringUntil = cfg.recoveringUntil || null;
 
     // Build sparklines from the last 72 buckets (6 hours at 5-min resolution)
     const now = Date.now();
@@ -58,7 +63,7 @@ export default async function handler(req, res) {
       });
     });
 
-    res.status(200).json({ readings, cwsStatus, sparklines, outdoorF: outdoorF ?? null, outageStartTime, timestamp });
+    res.status(200).json({ readings, cwsStatus, sparklines, outdoorF: outdoorF ?? null, outageStartTime, recoveringUntil, timestamp });
 
   } catch (err) {
     res.status(500).json({ error: err.message });

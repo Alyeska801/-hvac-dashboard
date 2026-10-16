@@ -222,7 +222,7 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
             onMouseLeave={e=>{e.target.style.borderColor="#1e3a55";e.target.style.color="#4a7fa5";}}>
             📊 OUTAGE HISTORY
           </button>
-          {(cwsStatus==="offline"||cwsStatus==="degraded")&&(
+          {(cwsStatus==="offline"||cwsStatus==="degraded"||cwsStatus==="recovering")&&(
             <button onClick={onAnalyze} style={{flex:1,background:"#220808",border:"1px solid #EF535088",borderRadius:6,color:"#EF5350",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,animation:"pulse 2s infinite"}}
               onMouseEnter={e=>e.target.style.background="#3a0a0a"}
               onMouseLeave={e=>e.target.style.background="#220808"}>
@@ -860,6 +860,7 @@ export default function App() {
         setApiCwsStatus(data.cwsStatus);
         setOutageStartTime(data.outageStartTime ?? null);
         setOutdoorF(data.outdoorF ?? null);
+        if(data.recoveringUntil) setRecoveringUntil(data.recoveringUntil);
         setLastUpdate(new Date());
       }
     }catch(err){console.error(err);}
@@ -867,7 +868,8 @@ export default function App() {
 
   useEffect(()=>{refresh();const id=setInterval(refresh,600000);return()=>clearInterval(id);},[refresh]);
 
-  const cwsStatus  = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold,recoveringUntil);
+  const _rawStatus = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold,recoveringUntil);
+  const cwsStatus  = (_rawStatus==="nominal"&&recoveringUntil&&Date.now()<recoveringUntil)?"recovering":_rawStatus;
   const systemMeta = STATUS_META[cwsStatus];
   const visibleSensors = SENSORS.filter(s=>showHot||s.pipe!=="hot");
 
