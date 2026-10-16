@@ -507,9 +507,10 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
         const prompt = [
           `CURRENT EVENT:`,
           `- Started: ${startStr}`,
+          durationHrs ? `- Total duration so far: ${durationHrs} hours` : null,
           isRecovering
-            ? `- Current status: RECOVERING — supply temperature has returned to normal range as of this analysis; the system is being monitored for stability`
-            : durationHrs ? `- Duration so far: ${durationHrs} hours and ongoing` : null,
+            ? `- Current status: RECOVERING — supply temperature has returned to normal range as of this analysis`
+            : `- Status: still ongoing`,
           peakTemp ? `- Peak CWS temperature reached: ${peakTemp}\u00b0F` : null,
           recoveryNote,
           trendNote ? `- Recent trend: ${trendNote}` : null,
