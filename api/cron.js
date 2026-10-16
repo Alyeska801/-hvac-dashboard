@@ -156,15 +156,23 @@ export default async function handler(req, res) {
     }), { ex: 600 });
 
     // Step 10b: Update outage cache incrementally
-    // This avoids expensive full scans in api/outages.js
+    // Tracks both "offline" and "degraded" as an active outage event.
+    // Brief dips to nominal within recoveryGraceMins do NOT close the event —
+    // this lets a sustained degraded period like Oct 11→now show as one outage.
     try {
       const cached = await redis.get("outages-cache") || { outages: [], lastUpdated: 0 };
       let outages = cached.outages || [];
       const last = outages[outages.length - 1];
+      const graceMergeMs = (settings.recoveryGraceMins ?? 120) * 60 * 1000;
+      const isOutageActive = cwsStatus === "offline" || cwsStatus === "degraded";
 
-      if (cwsStatus === "offline") {
-        if (last && last.ongoing) {
-          // Extend current outage
+      if (isOutageActive) {
+        // Check if we should merge with a recently-closed outage (brief nominal dip)
+        const shouldMerge = last && !last.ongoing && last.end && (now - last.end) < graceMergeMs;
+        if (last && (last.ongoing || shouldMerge)) {
+          // Extend or re-open existing outage (merge brief nominal gap)
+          last.ongoing = true;
+          last.end = null;
           last.durationHrs = +((now - last.start) / 3600000).toFixed(1);
           last.peakTemp = Math.max(last.peakTemp, cwsTemp ?? 0);
           if (ambientF != null) {
@@ -182,14 +190,13 @@ export default async function handler(req, res) {
             _ambientSum: ambientF ?? 0, _ambientCount: ambientF != null ? 1 : 0,
           });
         }
-      } else if (cwsStatus !== "offline" && last && last.ongoing) {
-        // Close outage
+      } else if (!isOutageActive && last && last.ongoing) {
+        // Nominal reading — tentatively close the outage.
+        // It will be re-opened if degraded/offline resumes within graceMergeMs.
         last.ongoing = false;
         last.end = now;
         last.durationHrs = +((now - last.start) / 3600000).toFixed(1);
-        // Clean up internal tracking fields
-        delete last._ambientSum;
-        delete last._ambientCount;
+        // Keep _ambientSum/_ambientCount for potential merge; clean up only on final close
       }
 
       // Recompute stats
@@ -241,10 +248,10 @@ export default async function handler(req, res) {
           });
         } else if (cwsStatus === "offline" && lastAlertType !== "offline") {
           // Starting a new offline period.
-          // If we were in recovery (brief recovery → re-failure), keep the ORIGINAL outageStartTime.
+          // If we were already tracking an outage (degraded or recovery), keep the ORIGINAL outageStartTime.
           // Otherwise this is a fresh outage — set outageStartTime to now.
-          const isReFailure = lastAlertType === "recovery" && alertState.outageStartTime;
-          const outageStartTime = isReFailure ? alertState.outageStartTime : now;
+          const isEscalation = (lastAlertType === "recovery" || lastAlertType === "degraded") && alertState.outageStartTime;
+          const outageStartTime = isEscalation ? alertState.outageStartTime : now;
           await sendAlert({ type: "offline", cwsTemp, recipients, situationFlag });
           await redis.set("hvac-alert-state", {
             type: "offline",
@@ -257,22 +264,41 @@ export default async function handler(req, res) {
           if (cwsTemp > (alertState.peakTemp || 0)) {
             await redis.set("hvac-alert-state", { ...alertState, peakTemp: cwsTemp });
           }
-        } else if (cwsStatus === "degraded" && lastAlertType !== "offline") {
-          // Check rate of rise
-          const pipeline = redis.pipeline();
-          for (let i = 1; i <= 6; i++) pipeline.hget(`reading:${bucket - i * BUCKET_MS}`, "CHW-S");
-          const historical = await pipeline.exec();
-          const pastTemps = historical.map(v => v != null ? parseFloat(v) : null).filter(v => v != null);
-          if (pastTemps.length >= 2) {
-            const oldest = pastTemps[pastTemps.length - 1];
-            const elapsed10min = (pastTemps.length * BUCKET_MS) / (10 * 60 * 1000);
-            const rate = +((cwsTemp - oldest) / elapsed10min).toFixed(2);
-            if (rate >= warnRateOfRise && timeSinceLast > warnCooldownMs) {
-              const degToOutage = offlineThreshold - cwsTemp;
-              const minsToOutage = rate > 0 ? Math.round(degToOutage / rate * 10) : null;
-              const eta = minsToOutage ? `approximately ${minsToOutage} minutes` : null;
-              await sendAlert({ type: "warning", cwsTemp, rate, eta, recipients, situationFlag });
-              await redis.set("hvac-alert-state", { type: "warning", time: now });
+        } else if (cwsStatus === "degraded") {
+          // Degraded: set outageStartTime if not already tracking an outage
+          const alreadyTracking = alertState.outageStartTime &&
+            (lastAlertType === "degraded" || lastAlertType === "offline" || lastAlertType === "recovery");
+          if (!alreadyTracking) {
+            // First tick into degraded — record outage start time
+            await redis.set("hvac-alert-state", {
+              ...alertState,
+              type: "degraded",
+              outageStartTime: alertState.outageStartTime || now,
+              peakTemp: Math.max(alertState.peakTemp || 0, cwsTemp),
+            });
+          } else {
+            // Still degraded — keep outageStartTime, update peak temp
+            if (cwsTemp > (alertState.peakTemp || 0)) {
+              await redis.set("hvac-alert-state", { ...alertState, type: "degraded", peakTemp: cwsTemp });
+            }
+          }
+
+          // Check rate of rise for warning alert (only when not already offline)
+          if (lastAlertType !== "offline") {
+            const rorPipeline = redis.pipeline();
+            for (let i = 1; i <= 6; i++) rorPipeline.hget(`reading:${bucket - i * BUCKET_MS}`, "CHW-S");
+            const historical = await rorPipeline.exec();
+            const pastTemps = historical.map(v => v != null ? parseFloat(v) : null).filter(v => v != null);
+            if (pastTemps.length >= 2) {
+              const oldest = pastTemps[pastTemps.length - 1];
+              const elapsed10min = (pastTemps.length * BUCKET_MS) / (10 * 60 * 1000);
+              const rate = +((cwsTemp - oldest) / elapsed10min).toFixed(2);
+              if (rate >= warnRateOfRise && timeSinceLast > warnCooldownMs) {
+                const degToOutage = offlineThreshold - cwsTemp;
+                const minsToOutage = rate > 0 ? Math.round(degToOutage / rate * 10) : null;
+                const eta = minsToOutage ? `approximately ${minsToOutage} minutes` : null;
+                await sendAlert({ type: "warning", cwsTemp, rate, eta, recipients, situationFlag });
+              }
             }
           }
         } else if (cwsStatus === "nominal" && lastAlertType === "recovery") {
