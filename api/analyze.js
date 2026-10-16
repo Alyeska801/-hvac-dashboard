@@ -10,9 +10,11 @@ export default async function handler(req, res) {
 
 Write one paragraph of plain prose — no bullet points, no markdown, no headers, no line breaks within the paragraph. Your paragraph should tell the story of this chilled water system event: when it began, how the temperature trajectory has evolved, whether there have been any recovery attempts, where things stand now, and how this compares to the building's historical outage record.
 
-Use concrete numbers and times. Do not pad with generic reassurances. Do not mention any indoor temperature readings, unit-level sensor data, or thermostat schedules — those are private to individual residents. Do not make recommendations. Do not describe what the dashboard shows. Write as if you are briefing the board at their monthly meeting.
+If the data says the system is currently RECOVERING, lead with that — it is the most important current fact. The recovery is part of the outage sequence and should be framed as such: the system has returned to normal range but the event is not yet considered closed.
 
-When the outdoor temperature data suggests Free Cooling mode may be a factor, acknowledge that possibility plainly — it changes the interpretation of a sustained warm supply temperature.
+If outdoor temperature data is provided suggesting Free Cooling mode may be active, mention it by name as a possible factor — do not explain what Free Cooling is or how it works; residents and the board already know. One sentence is enough.
+
+Use concrete numbers and times. Do not mention any indoor temperature readings, unit-level sensor data, or thermostat schedules — those are private to individual residents. Do not make recommendations. Do not describe what the dashboard shows. Write as if you are briefing the board at their monthly meeting.
 
 Maximum 200 words.`;
 

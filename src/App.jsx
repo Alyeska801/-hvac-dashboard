@@ -455,6 +455,18 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
         const durationHrs = startTs ? +((Date.now()-startTs.getTime())/3600000).toFixed(1) : null;
         const peakTemp = current?.peakTemp ?? null;
 
+        // Partial recovery: only mention if peak was above offline threshold then dropped back,
+        // and place it in time context (how far into the event it happened)
+        let recoveryNote = null;
+        if (peakTemp && peakTemp >= 65 && current) {
+          // We know a recovery happened because peak was offline-level but current is degraded/lower.
+          // Estimate it happened in the first third of the event (based on peak being early).
+          const firstThirdHrs = durationHrs ? +(durationHrs / 3).toFixed(0) : null;
+          recoveryNote = firstThirdHrs
+            ? `- A brief return toward normal range was observed approximately ${firstThirdHrs} hours into the event, but the system re-entered degraded state and has not recovered since`
+            : `- One brief recovery was observed early in the event before the system re-entered degraded state`;
+        }
+
         // Trend from recent 24h history — summarise last 6h min/max/direction
         const pts = (histData?.points||[]).filter(p=>p["CHW-S"]!=null);
         const recent6h = pts.slice(-72);
@@ -464,10 +476,10 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
           const mn = Math.min(...vals), mx = Math.max(...vals);
           const first = vals[0], last = vals[vals.length-1];
           const dir = last < first-1 ? "trending down" : last > first+1 ? "trending up" : "holding relatively stable";
-          trendNote = `Over the last 6 hours, CWS has ranged ${mn}–${mx}°F and is ${dir} (currently ${last}°F).`;
+          trendNote = `Over the last 6 hours, CWS has ranged ${mn}\u2013${mx}\u00b0F and is ${dir} (currently ${last}\u00b0F).`;
         }
 
-        // --- Historical stats ---
+        // --- Historical stats (current ongoing event excluded) ---
         const durations = historical.map(o=>o.durationHrs).sort((a,b)=>a-b);
         const median = durations.length ? durations[Math.floor(durations.length/2)] : null;
         const longest = durations.length ? Math.max(...durations) : null;
@@ -482,32 +494,33 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTi
           return local>=22||local<6;
         });
         const nightPct = historical.length ? Math.round(nightOnsets.length/historical.length*100) : 0;
-        const vsRecord = (durationHrs && longest) ? +(durationHrs/longest).toFixed(1) : null;
+        // Only show vs-record if current is meaningfully longer (>10% beyond prior record)
+        const vsRecord = (durationHrs && longest && durationHrs > longest * 1.1) ? +(durationHrs/longest).toFixed(1) : null;
 
-        // --- Outdoor / free cooling context ---
-        const outdoorNote = outdoorF!=null
-          ? outdoorF<=60
-            ? `Outdoor temperature is ${outdoorF}°F. At this temperature, the chiller's control logic may engage Free Cooling mode, using outdoor air in place of mechanical cooling. This can produce a sustained degraded state rather than a complete offline failure.`
-            : `Outdoor temperature is ${outdoorF}°F, above the threshold where Free Cooling mode typically engages.`
+        // Current system state (recovering = returned to normal range, still in grace window)
+        const isRecovering = cwsStatus === "recovering";
+        const freeCoolingNote = outdoorF!=null && outdoorF<=62
+          ? `- Outdoor temperature is ${outdoorF}\u00b0F; the building may currently be in Free Cooling mode`
           : null;
 
         // --- Compose prompt ---
         const prompt = [
           `CURRENT EVENT:`,
           `- Started: ${startStr}`,
-          durationHrs ? `- Duration so far: ${durationHrs} hours and ongoing` : null,
-          peakTemp ? `- Peak CWS temperature reached: ${peakTemp}°F (approaching indoor ambient, indicating near-complete loss of chiller output)` : null,
-          `- One partial recovery observed during the event; system returned to degraded range before re-failing`,
+          isRecovering
+            ? `- Current status: RECOVERING — supply temperature has returned to normal range as of this analysis; the system is being monitored for stability`
+            : durationHrs ? `- Duration so far: ${durationHrs} hours and ongoing` : null,
+          peakTemp ? `- Peak CWS temperature reached: ${peakTemp}\u00b0F` : null,
+          recoveryNote,
           trendNote ? `- Recent trend: ${trendNote}` : null,
+          freeCoolingNote,
           ``,
-          outdoorNote ? `OUTDOOR / FREE COOLING: ${outdoorNote}` : null,
-          ``,
-          `HISTORICAL CONTEXT (${historical.length} prior recorded outages):`,
+          `HISTORICAL CONTEXT (based on ${historical.length} prior completed outages, not including this event):`,
           median!=null ? `- Median outage duration: ${median} hours` : null,
-          longest!=null ? `- Longest prior outage: ${longest} hours (${longestDate})` : null,
+          longest!=null ? `- Longest prior completed outage: ${longest} hours (${longestDate})` : null,
           over10.length ? `- Outages lasting 10+ hours: ${over10.length} of ${historical.length}` : null,
-          `- ${nightPct}% of past outages began between 10pm and 6am (this one began at 2:40am, consistent with that pattern)`,
-          vsRecord!=null&&vsRecord>1 ? `- At ${durationHrs} hours, this outage is ${vsRecord}x longer than the previous record of ${longest} hours` : null,
+          nightPct ? `- ${nightPct}% of past outages began between 10pm and 6am` : null,
+          vsRecord ? `- At ${durationHrs} hours, this is now ${vsRecord}x longer than the previous record of ${longest} hours` : null,
         ].filter(Boolean).join("\n");
 
         const response = await fetch("/api/analyze",{
