@@ -72,7 +72,7 @@ function Sparkline({ data, color, width=210, height=34 }) {
     t:times[i],
   }));
   return (
-    <svg width={width} height={height} style={{overflow:"visible",display:"block"}}>
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{overflow:"visible",display:"block"}}>
       <defs><linearGradient id={`sg${color.slice(1)}`} x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stopColor={color} stopOpacity="0.2"/>
         <stop offset="100%" stopColor={color} stopOpacity="0.01"/>
@@ -157,7 +157,7 @@ function UptimeBar({ uptime }) {
   );
 }
 
-function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, offlineT, onViewHistory, onAnalyze }) {
+function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, offlineT, outageStartTime, onViewHistory, onAnalyze }) {
   const status=getSensorStatus(sensor.id,reading,degradedT,offlineT);
   const sdot={normal:"#4CAF50",warning:"#FFA726",critical:"#EF5350"}[status];
   const sbg ={normal:"#1b3a2a",warning:"#3a2a0a",critical:"#3a0a0a"}[status];
@@ -199,6 +199,22 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
           : <div style={{height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#1e3a55",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>COLLECTING DATA...</div>}
       </div>
       {isCWS&&<UptimeBar uptime={uptime}/>}
+      {(()=>{
+        const showTimer=isCWS&&outageStartTime&&(cwsStatus==="offline"||cwsStatus==="degraded"||cwsStatus==="recovering");
+        if(!showTimer) return null;
+        const elapsed=Date.now()-new Date(outageStartTime).getTime();
+        const h=Math.floor(elapsed/3600000);
+        const m=Math.floor((elapsed%3600000)/60000);
+        const timerLabel=h>0?`${h}h ${m}m`:`${m}m`;
+        return(
+          <div style={{margin:"8px 0 0",padding:"5px 10px",background:"#1a0505",border:"1px solid #EF535033",borderRadius:6,display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:5,height:5,borderRadius:"50%",background:"#EF5350",animation:"pulse 1.5s infinite",flexShrink:0}}/>
+            <span style={{fontSize:9,fontFamily:"'DM Mono',monospace",color:"#c87070",letterSpacing:1}}>
+              OUTAGE IN PROGRESS · {timerLabel}
+            </span>
+          </div>
+        );
+      })()}
       {isCWS&&(
         <div style={{display:"flex",gap:8,marginTop:10}}>
           <button onClick={onViewHistory} style={{flex:1,background:"#0a1828",border:"1px solid #1e3a55",borderRadius:6,color:"#4a7fa5",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,transition:"all 0.2s"}}
@@ -206,7 +222,7 @@ function SensorCard({ sensor, reading, history, uptime, cwsStatus, degradedT, of
             onMouseLeave={e=>{e.target.style.borderColor="#1e3a55";e.target.style.color="#4a7fa5";}}>
             📊 OUTAGE HISTORY
           </button>
-          {(cwsStatus==="offline"||cwsStatus==="degraded")&&(
+          {(cwsStatus==="offline"||cwsStatus==="degraded"||cwsStatus==="recovering")&&(
             <button onClick={onAnalyze} style={{flex:1,background:"#220808",border:"1px solid #EF535088",borderRadius:6,color:"#EF5350",padding:"7px",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",letterSpacing:1,animation:"pulse 2s infinite"}}
               onMouseEnter={e=>e.target.style.background="#3a0a0a"}
               onMouseLeave={e=>e.target.style.background="#220808"}>
@@ -261,10 +277,10 @@ function EngineeringBanner({ cwsStatus, engState, eta }) {
   const meta=STATUS_META[cwsStatus];
   if (cwsStatus==="nominal"&&engState==="none") return null;
   let msg=meta.baseMsg||"";
-  if (engState==="aware") msg=[msg,ENG_STATES.aware.suffix].filter(Boolean).join(" ");
+  if (engState==="aware") msg=[msg,ENG_STATES.aware.suffix].filter(Boolean).join("\n");
   else if (engState==="maintenance") {
     const etaPart=eta?`Estimated return to service: ${eta}.`:"Return to service time is being determined.";
-    msg=[msg,"System is offline for scheduled maintenance.",etaPart].filter(Boolean).join(" ");
+    msg=[msg,"System is offline for scheduled maintenance.",etaPart].filter(Boolean).join("\n");
   }
   if (!msg) return null;
   return (
@@ -376,7 +392,7 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
                       <div style={{display:"flex",gap:12,fontSize:10}}>
                         <span style={{color}}>{o.durationHrs}h</span>
                         <span style={{color}}>peak {o.peakTemp}°F</span>
-                        {o.ambientDelta!=null&&<span style={{color:"#4a7fa5"}}>+{o.ambientDelta}° above ambient</span>}
+                        {o.ambientDelta!=null&&<span style={{color:"#4a7fa5"}}>{o.ambientDelta>=0?"+":""}{o.ambientDelta}°F from ambient</span>}
                       </div>
                     </div>
                     <div style={{height:6,background:"#0a1525",borderRadius:3,overflow:"hidden"}}>
@@ -408,7 +424,7 @@ function OutageHistoryModal({ onClose, degradedT, offlineT }) {
   );
 }
 
-function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
+function OutageAnalysisModal({ onClose, currentReading, cwsStatus, outageStartTime, outdoorF }) {
   const [analysis,setAnalysis]=useState("");
   const [outages,setOutages]=useState([]);
   const [loading,setLoading]=useState(true);
@@ -417,54 +433,105 @@ function OutageAnalysisModal({ onClose, currentReading, cwsStatus }) {
   useEffect(()=>{
     async function run() {
       try {
-        const [histRes,outageRes]=await Promise.all([
-          fetch("/api/history?window=7d"),
+        // Fetch outages + recent 24h sparkline data in parallel
+        const [outageRes, histRes] = await Promise.all([
           fetch("/api/outages"),
+          fetch("/api/history?window=24h"),
         ]);
-        const [histData,outageData]=await Promise.all([histRes.json(),outageRes.json()]);
+        const [outageData, histData] = await Promise.all([outageRes.json(), histRes.json()]);
 
         // Store outages for sidebar (most recent first, max 6)
         setOutages(([...(outageData?.outages||[])]).reverse().slice(0,6));
 
-        // Build recent trend — last 6 hours at 5-min resolution
-        const recentPoints=(histData?.points||[]).slice(-72)
-          .map(p=>`${new Date(p.ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})} ${p["CHW-S"]}°F`)
-          .join(", ");
+        const allOutages = outageData?.outages || [];
+        const historical = allOutages.filter(o => !o.ongoing && o.end);
+        const current = allOutages.find(o => o.ongoing);
 
-        // Pattern summary from past outages
-        const pastOutages=(outageData?.outages||[]).slice(-10);
-        const starts=pastOutages.map(o=>new Date(o.start).getHours());
-        const nightOutages=starts.filter(h=>h>=22||h<=6).length;
-        const morningOutages=starts.filter(h=>h>6&&h<=10).length;
-        const patternNote=nightOutages>morningOutages
-          ? `${nightOutages}/${pastOutages.length} past outages started between 10pm-6am`
-          : `${morningOutages}/${pastOutages.length} past outages started between 6am-10am`;
-        const avgDuration=pastOutages.length
-          ? +(pastOutages.reduce((s,o)=>s+o.durationHrs,0)/pastOutages.length).toFixed(1)
+        // --- Current event stats ---
+        const startTs = outageStartTime ? new Date(outageStartTime) : (current ? new Date(current.start) : null);
+        const startStr = startTs
+          ? startTs.toLocaleString("en-US",{timeZone:"America/Denver",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})+" MDT"
+          : "unknown";
+        const durationHrs = startTs ? +((Date.now()-startTs.getTime())/3600000).toFixed(1) : null;
+        const peakTemp = current?.peakTemp ?? null;
+
+        // Partial recovery: only mention if peak was above offline threshold then dropped back,
+        // and place it in time context (how far into the event it happened)
+        let recoveryNote = null;
+        if (peakTemp && peakTemp >= 65 && current) {
+          // We know a recovery happened because peak was offline-level but current is degraded/lower.
+          // Estimate it happened in the first third of the event (based on peak being early).
+          const firstThirdHrs = durationHrs ? +(durationHrs / 3).toFixed(0) : null;
+          recoveryNote = firstThirdHrs
+            ? `- A brief return toward normal range was observed approximately ${firstThirdHrs} hours into the event, but the system re-entered degraded state and has not recovered since`
+            : `- One brief recovery was observed early in the event before the system re-entered degraded state`;
+        }
+
+        // Trend from recent 24h history — summarise last 6h min/max/direction
+        const pts = (histData?.points||[]).filter(p=>p["CHW-S"]!=null);
+        const recent6h = pts.slice(-72);
+        let trendNote = "";
+        if (recent6h.length >= 2) {
+          const vals = recent6h.map(p=>p["CHW-S"]);
+          const mn = Math.min(...vals), mx = Math.max(...vals);
+          const first = vals[0], last = vals[vals.length-1];
+          const dir = last < first-1 ? "trending down" : last > first+1 ? "trending up" : "holding relatively stable";
+          trendNote = `Over the last 6 hours, CWS has ranged ${mn}\u2013${mx}\u00b0F and is ${dir} (currently ${last}\u00b0F).`;
+        }
+
+        // --- Historical stats (current ongoing event excluded) ---
+        const durations = historical.map(o=>o.durationHrs).sort((a,b)=>a-b);
+        const median = durations.length ? durations[Math.floor(durations.length/2)] : null;
+        const longest = durations.length ? Math.max(...durations) : null;
+        const longestEntry = historical.find(o=>o.durationHrs===longest);
+        const longestDate = longestEntry
+          ? new Date(longestEntry.start).toLocaleDateString("en-US",{timeZone:"America/Denver",month:"short",day:"numeric",year:"numeric"})
           : null;
-        const maxPeak=pastOutages.length?Math.max(...pastOutages.map(o=>o.peakTemp)):null;
+        const over10 = historical.filter(o=>o.durationHrs>=10);
+        const nightOnsets = historical.filter(o=>{
+          const hr = new Date(o.start).getUTCHours()-6;
+          const local = ((hr%24)+24)%24;
+          return local>=22||local<6;
+        });
+        const nightPct = historical.length ? Math.round(nightOnsets.length/historical.length*100) : 0;
+        // Flag if current has exceeded the prior record (any margin)
+        const vsRecord = (durationHrs && longest && durationHrs > longest) ? +(durationHrs/longest).toFixed(1) : null;
 
-        const prompt=`You are the HVAC monitor for American Towers, a high-rise condo in Salt Lake City. The building chiller has recurring outage issues.
+        // Current system state (recovering = returned to normal range, still in grace window)
+        const isRecovering = cwsStatus === "recovering";
+        const freeCoolingNote = outdoorF!=null && outdoorF<=62
+          ? `- Cooler outdoor temperatures (${outdoorF}\u00b0F) may have the building operating in Free Cooling mode`
+          : null;
 
-CURRENT: CWS is ${cwsStatus.toUpperCase()} at ${currentReading}°F (nominal <57°F, degraded 57-65°F, offline >65°F)
-RECENT TREND (last 6h): ${recentPoints}
+        // --- Compose prompt ---
+        const prompt = [
+          `CURRENT EVENT:`,
+          `- Started: ${startStr}`,
+          durationHrs ? `- Total duration so far: ${durationHrs} hours` : null,
+          isRecovering
+            ? `- Current status: RECOVERING — supply temperature has returned to normal range as of this analysis`
+            : `- Status: still ongoing`,
+          peakTemp ? `- Peak CWS temperature reached during this event: ${peakTemp}\u00b0F (this is distinct from the 6-hour range below)` : null,
+          recoveryNote,
+          trendNote ? `- 6-hour temperature range (not the event peak): ${trendNote}` : null,
+          freeCoolingNote,
+          ``,
+          `HISTORICAL CONTEXT (based on ${historical.length} prior completed outages, not including this event):`,
+          median!=null ? `- Median outage duration: ${median} hours` : null,
+          longest!=null ? `- Longest prior completed outage: ${longest} hours (${longestDate})` : null,
+          over10.length ? `- Outages lasting 10+ hours: ${over10.length} of ${historical.length}` : null,
+          nightPct ? `- ${nightPct}% of past outages began between 10pm and 6am` : null,
+          vsRecord ? `- NOTE: at ${durationHrs} hours, this event has now exceeded the previous longest outage on record (${longest} hours). This is the new longest outage in building history.` : null,
+        ].filter(Boolean).join("\n");
 
-HISTORICAL PATTERN: ${patternNote}. Average outage duration: ${avgDuration}h. Worst peak: ${maxPeak}°F.
-Resident thermostat: cools to 70°F overnight (9pm-7am) — peak demand period aligns with most outage starts.
-
-Respond in plain English, 3 short paragraphs max, no bullet points, no markdown:
-1. What is happening right now and how serious is it?
-2. How does this compare to the typical outage pattern — is this early-stage, mid-outage, or atypical?
-3. One practical recommendation for engineering or residents.`;
-
-        const response=await fetch("/api/analyze",{
+        const response = await fetch("/api/analyze",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({summary:prompt,cwsStatus,currentReading,mode:"current"}),
+          body:JSON.stringify({summary:prompt, cwsStatus, currentReading}),
         });
-        const data=await response.json();
+        const data = await response.json();
         setAnalysis(data.analysis||"Analysis unavailable.");
-      } catch { setAnalysis("Failed to generate analysis. Please try again."); }
+      } catch(e) { setAnalysis("Failed to generate analysis. Please try again."); }
       setLoading(false);
     }
     run();
@@ -742,6 +809,8 @@ export default function App() {
   const [warnCooldownHours,  setWarnCooldownHours]   = useState(4);
   const [recoveryGraceMins,  setRecoveryGraceMins]   = useState(120);
   const [recoveringUntil,    setRecoveringUntil]     = useState(null);
+  const [outageStartTime,    setOutageStartTime]    = useState(null);
+  const [outdoorF,           setOutdoorF]            = useState(null);
   const [adminOpen,          setAdminOpen]           = useState(false);
   const [pwModal,            setPwModal]             = useState(false);
   const [pwDraft,            setPwDraft]             = useState("");
@@ -802,6 +871,9 @@ export default function App() {
           })));
         }
         setApiCwsStatus(data.cwsStatus);
+        setOutageStartTime(data.outageStartTime ?? null);
+        setOutdoorF(data.outdoorF ?? null);
+        if(data.recoveringUntil) setRecoveringUntil(data.recoveringUntil);
         setLastUpdate(new Date());
       }
     }catch(err){console.error(err);}
@@ -809,7 +881,8 @@ export default function App() {
 
   useEffect(()=>{refresh();const id=setInterval(refresh,600000);return()=>clearInterval(id);},[refresh]);
 
-  const cwsStatus  = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold,recoveringUntil);
+  const _rawStatus = apiCwsStatus||getCWSStatus(readings["CHW-S"],ambientTemp,matchDelta,offlineThreshold,degradedThreshold,recoveringUntil);
+  const cwsStatus  = (_rawStatus==="nominal"&&recoveringUntil&&Date.now()<recoveringUntil)?"recovering":_rawStatus;
   const systemMeta = STATUS_META[cwsStatus];
   const visibleSensors = SENSORS.filter(s=>showHot||s.pipe!=="hot");
 
@@ -885,6 +958,7 @@ export default function App() {
             <SensorCard key={s.id} sensor={s} reading={readings[s.id]} history={histories[s.id]}
               uptime={s.id==="CHW-S"?uptime:null} cwsStatus={cwsStatus}
               degradedT={degradedThreshold} offlineT={offlineThreshold}
+              outageStartTime={s.id==="CHW-S"?outageStartTime:null}
               onViewHistory={()=>setShowHistory(true)} onAnalyze={()=>setShowAnalysis(true)}/>
           ))}
         </div>
@@ -937,7 +1011,7 @@ export default function App() {
       )}
 
       {showHistory  && <OutageHistoryModal  onClose={()=>setShowHistory(false)}  degradedT={degradedThreshold} offlineT={offlineThreshold}/>}
-      {showAnalysis && <OutageAnalysisModal onClose={()=>setShowAnalysis(false)} currentReading={readings["CHW-S"]} cwsStatus={cwsStatus}/>}
+      {showAnalysis && <OutageAnalysisModal onClose={()=>setShowAnalysis(false)} currentReading={readings["CHW-S"]} cwsStatus={cwsStatus} outageStartTime={outageStartTime} outdoorF={outdoorF}/>}
 
       {adminOpen&&(
         <AdminPanel
